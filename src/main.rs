@@ -87,7 +87,7 @@ pub fn main() {
                 }
             };
 
-            cartridge.load_into(&mut machine);
+            machine.cartridge_slot = Some(cartridge);
             println!("Successfully loaded cartridge.");
         }
         else if command.eq_ignore_ascii_case("Reset") {
@@ -95,10 +95,10 @@ pub fn main() {
             println!("Successfully reset.");
         }
         else if command.eq_ignore_ascii_case("Step") {
-            let opcode = machine.read_byte(self.program_counter);
+            let opcode = machine.read_byte_silent(machine.cpu.program_counter);
             let instruction = instructions::Instruction::decode(opcode);
             println!("Opcode: ${opcode:02X}");
-            println!("Disassembly: {}", instruction.disassemble(&machine, self.program_counter));
+            println!("Disassembly: {}", instruction.disassemble(&machine, machine.cpu.program_counter));
             machine.execute_instruction();
         }
         else if command.eq_ignore_ascii_case("State") {
