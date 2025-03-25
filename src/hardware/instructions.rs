@@ -32,352 +32,374 @@ impl AddressingMode {
             Implicit => format!("{mnemonic}"),
             Accumulator => format!("{mnemonic} A"),
             Relative => format!("{mnemonic} ${:04X}", opcode_address.wrapping_add(2)
-                .wrapping_add_signed(machine.fetch_byte(operand_address) as i8 as i16)),
-            Immediate => format!("{mnemonic} #${:02X}", machine.fetch_byte(operand_address)),
-            ZeroPage => format!("{mnemonic} ${:02X}", machine.fetch_byte(operand_address)),
-            ZeroPageX => format!("{mnemonic} ${:02X},X", machine.fetch_byte(operand_address)),
-            ZeroPageY => format!("{mnemonic} ${:02X},Y", machine.fetch_byte(operand_address)),
-            Absolute => format!("{mnemonic} ${:04X}", machine.fetch_pair(operand_address)),
-            AbsoluteX => format!("{mnemonic} ${:04X},X", machine.fetch_pair(operand_address)),
-            AbsoluteY => format!("{mnemonic} ${:04X},Y", machine.fetch_pair(operand_address)),
-            Indirect => format!("{mnemonic} (${:04X})", machine.fetch_pair(operand_address)),
-            IndirectX => format!("{mnemonic} (${:02X},X)", machine.fetch_byte(operand_address)),
-            IndirectY => format!("{mnemonic} (${:02X}),Y", machine.fetch_byte(operand_address)),
+                .wrapping_add_signed(machine.read_byte_silent(operand_address) as i8 as i16)),
+            Immediate => format!("{mnemonic} #${:02X}", machine.read_byte_silent(operand_address)),
+            ZeroPage => format!("{mnemonic} ${:02X}", machine.read_byte_silent(operand_address)),
+            ZeroPageX => format!("{mnemonic} ${:02X},X", machine.read_byte_silent(operand_address)),
+            ZeroPageY => format!("{mnemonic} ${:02X},Y", machine.read_byte_silent(operand_address)),
+            Absolute => format!("{mnemonic} ${:04X}", machine.read_pair_silent(operand_address)),
+            AbsoluteX => format!("{mnemonic} ${:04X},X", machine.read_pair_silent(operand_address)),
+            AbsoluteY => format!("{mnemonic} ${:04X},Y", machine.read_pair_silent(operand_address)),
+            Indirect => format!("{mnemonic} (${:04X})", machine.read_pair_silent(operand_address)),
+            IndirectX => format!("{mnemonic} (${:02X},X)", machine.read_byte_silent(operand_address)),
+            IndirectY => format!("{mnemonic} (${:02X}),Y", machine.read_byte_silent(operand_address)),
         }
     }
 
-    fn program_counter_increment(self) -> u16 {
+    fn get_instruction_size(self) -> u16 {
         match self {
-            Implicit => 1,
-            Accumulator => 1,
-            Relative => 2,
-            Immediate => 2,
-            ZeroPage => 2,
-            ZeroPageX => 2,
-            ZeroPageY => 2,
-            Absolute => 3,
-            AbsoluteX => 3,
-            AbsoluteY => 3,
-            Indirect => 3,
-            IndirectX => 2,
-            IndirectY => 2,
+            Implicit | Accumulator
+                => 1,
+            Relative | Immediate | ZeroPage | ZeroPageX | ZeroPageY | IndirectX | IndirectY
+                => 2,
+            Absolute | AbsoluteX | AbsoluteY | Indirect
+                => 3,
         }
     }
 
-    fn calculate_address(self, machine: &Machine) -> u16 {
+    fn calculate_address(self, machine: &mut Machine) -> u16 {
         match self {
             Immediate => {
-                machine.program_counter.wrapping_sub(1)
+                machine.cpu.program_counter.wrapping_sub(1)
             }
             ZeroPage => {
-                machine.fetch_byte(machine.program_counter.wrapping_sub(1)) as u16
+                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16
             }
             ZeroPageX => {
-                machine.fetch_byte(machine.program_counter.wrapping_sub(1)).wrapping_add(machine.register_x) as u16
+                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16
             }
             ZeroPageY => {
-                machine.fetch_byte(machine.program_counter.wrapping_sub(1)).wrapping_add(machine.register_y) as u16
+                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_y) as u16
             }
             Absolute => {
-                machine.fetch_pair(machine.program_counter.wrapping_sub(2))
+                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2))
             }
             AbsoluteX => {
-                machine.fetch_pair(machine.program_counter.wrapping_sub(2)).wrapping_add(machine.register_x as u16)
+                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)).wrapping_add(machine.cpu.register_x as u16)
             }
             AbsoluteY => {
-                machine.fetch_pair(machine.program_counter.wrapping_sub(2)).wrapping_add(machine.register_y as u16)
+                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)).wrapping_add(machine.cpu.register_y as u16)
             }
             Indirect => {
                 // TODO: Does NES have page boundary bug?
-                machine.fetch_pair(machine.fetch_pair(machine.program_counter.wrapping_sub(2)))
+                machine.read_pair(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)))
             }
             IndirectX => {
-                machine.fetch_pair(machine.fetch_byte(machine.program_counter.wrapping_sub(1)).wrapping_add(machine.register_x) as u16)
+                machine.read_pair(machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16)
             }
             IndirectY => {
-                machine.fetch_pair(machine.fetch_byte(machine.program_counter.wrapping_sub(1)) as u16).wrapping_add(machine.register_y as u16)
+                machine.read_pair(machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16).wrapping_add(machine.cpu.register_y as u16)
             }
             _ => panic!("cannot calculate address for addressing mode")
         }
     }
 }
 
-pub struct Instruction(u8, Operation, AddressingMode);
+pub struct Instruction {
+    opcode: u8,
+    operation: Operation,
+    addressing_mode: AddressingMode,
+    cycles_needed: i32,
+}
 
 impl Instruction {
+    const fn new(opcode: u8, operation: Operation, addressing_mode: AddressingMode, cycles_needed: i32) -> Self {
+        Self {
+            opcode,
+            operation,
+            addressing_mode,
+            cycles_needed,
+        }
+    }
+
     pub fn decode(opcode: u8) -> &'static Self {
-        &INSTRUCTION_SPACE[opcode as usize]
+        &INSTRUCTIONS[opcode as usize]
+    }
+
+    pub fn opcode(&self) -> u8 {
+        self.opcode
+    }
+
+    pub fn mnemonic(&self) -> &'static str {
+        self.operation.mnemonic
+    }
+    
+    pub fn size_bytes(&self) -> u16 {
+        self.addressing_mode.get_instruction_size()
+    }
+
+    pub fn cycles_needed(&self) -> i32 {
+        self.cycles_needed
     }
 
     pub fn disassemble(&self, machine: &Machine, opcode_address: u16) -> String {
-        let Self(_opcode, operation, addressing_mode) = *self;
-        addressing_mode.format_instruction(operation.mnemonic, machine, opcode_address)
+        self.addressing_mode.format_instruction(self.mnemonic(), machine, opcode_address)
     }
 
     pub fn execute(&self, machine: &mut Machine) {
-        let Self(_opcode, operation, addressing_mode) = *self;
-        machine.program_counter = machine.program_counter.wrapping_add(addressing_mode.program_counter_increment());
-        (operation.function)(addressing_mode, machine);
+        machine.cpu.program_counter = machine.cpu.program_counter.wrapping_add(self.size_bytes());
+        (self.operation.function)(self.addressing_mode, machine);
     }
 }
 
-const INSTRUCTION_SPACE: [Instruction; 0x100] = [
-    Instruction(0x00, BRK, Implicit),
-    Instruction(0x01, ORA, IndirectX),
-    Instruction(0x02, UNMAPPED, Implicit),
-    Instruction(0x03, UNMAPPED, Implicit),
-    Instruction(0x04, UNMAPPED, Implicit),
-    Instruction(0x05, ORA, ZeroPage),
-    Instruction(0x06, ASL, ZeroPage),
-    Instruction(0x07, UNMAPPED, Implicit),
-    Instruction(0x08, PHP, Implicit),
-    Instruction(0x09, ORA, Immediate),
-    Instruction(0x0A, ASL, Accumulator),
-    Instruction(0x0B, UNMAPPED, Implicit),
-    Instruction(0x0C, UNMAPPED, Implicit),
-    Instruction(0x0D, ORA, Absolute),
-    Instruction(0x0E, ASL, Absolute),
-    Instruction(0x0F, UNMAPPED, Implicit),
-    Instruction(0x10, BPL, Relative),
-    Instruction(0x11, ORA, IndirectY),
-    Instruction(0x12, UNMAPPED, Implicit),
-    Instruction(0x13, UNMAPPED, Implicit),
-    Instruction(0x14, UNMAPPED, Implicit),
-    Instruction(0x15, ORA, ZeroPageX),
-    Instruction(0x16, ASL, ZeroPageX),
-    Instruction(0x17, UNMAPPED, Implicit),
-    Instruction(0x18, CLC, Implicit),
-    Instruction(0x19, ORA, AbsoluteY),
-    Instruction(0x1A, UNMAPPED, Implicit),
-    Instruction(0x1B, UNMAPPED, Implicit),
-    Instruction(0x1C, UNMAPPED, Implicit),
-    Instruction(0x1D, ORA, AbsoluteX),
-    Instruction(0x1E, ASL, AbsoluteX),
-    Instruction(0x1F, UNMAPPED, Implicit),
-    Instruction(0x20, JSR, Absolute),
-    Instruction(0x21, AND, IndirectX),
-    Instruction(0x22, UNMAPPED, Implicit),
-    Instruction(0x23, UNMAPPED, Implicit),
-    Instruction(0x24, BIT, ZeroPage),
-    Instruction(0x25, AND, ZeroPage),
-    Instruction(0x26, ROL, ZeroPage),
-    Instruction(0x27, UNMAPPED, Implicit),
-    Instruction(0x28, PLP, Implicit),
-    Instruction(0x29, AND, Immediate),
-    Instruction(0x2A, ROL, Accumulator),
-    Instruction(0x2B, UNMAPPED, Implicit),
-    Instruction(0x2C, BIT, Absolute),
-    Instruction(0x2D, AND, Absolute),
-    Instruction(0x2E, ROL, Absolute),
-    Instruction(0x2F, UNMAPPED, Implicit),
-    Instruction(0x30, BMI, Relative),
-    Instruction(0x31, AND, IndirectY),
-    Instruction(0x32, UNMAPPED, Implicit),
-    Instruction(0x33, UNMAPPED, Implicit),
-    Instruction(0x34, UNMAPPED, Implicit),
-    Instruction(0x35, AND, ZeroPageX),
-    Instruction(0x36, ROL, ZeroPageX),
-    Instruction(0x37, UNMAPPED, Implicit),
-    Instruction(0x38, SEC, Implicit),
-    Instruction(0x39, AND, AbsoluteY),
-    Instruction(0x3A, UNMAPPED, Implicit),
-    Instruction(0x3B, UNMAPPED, Implicit),
-    Instruction(0x3C, UNMAPPED, Implicit),
-    Instruction(0x3D, AND, AbsoluteX),
-    Instruction(0x3E, ROL, AbsoluteX),
-    Instruction(0x3F, UNMAPPED, Implicit),
-    Instruction(0x40, RTI, Implicit),
-    Instruction(0x41, EOR, IndirectX),
-    Instruction(0x42, UNMAPPED, Implicit),
-    Instruction(0x43, UNMAPPED, Implicit),
-    Instruction(0x44, UNMAPPED, Implicit),
-    Instruction(0x45, EOR, ZeroPage),
-    Instruction(0x46, LSR, ZeroPage),
-    Instruction(0x47, UNMAPPED, Implicit),
-    Instruction(0x48, PHA, Implicit),
-    Instruction(0x49, EOR, Immediate),
-    Instruction(0x4A, LSR, Accumulator),
-    Instruction(0x4B, UNMAPPED, Implicit),
-    Instruction(0x4C, JMP, Absolute),
-    Instruction(0x4D, EOR, Absolute),
-    Instruction(0x4E, LSR, Absolute),
-    Instruction(0x4F, UNMAPPED, Implicit),
-    Instruction(0x50, BVC, Relative),
-    Instruction(0x51, EOR, IndirectY),
-    Instruction(0x52, UNMAPPED, Implicit),
-    Instruction(0x53, UNMAPPED, Implicit),
-    Instruction(0x54, UNMAPPED, Implicit),
-    Instruction(0x55, EOR, ZeroPageX),
-    Instruction(0x56, LSR, ZeroPageX),
-    Instruction(0x57, UNMAPPED, Implicit),
-    Instruction(0x58, CLI, Implicit),
-    Instruction(0x59, EOR, AbsoluteY),
-    Instruction(0x5A, UNMAPPED, Implicit),
-    Instruction(0x5B, UNMAPPED, Implicit),
-    Instruction(0x5C, UNMAPPED, Implicit),
-    Instruction(0x5D, EOR, AbsoluteX),
-    Instruction(0x5E, LSR, AbsoluteX),
-    Instruction(0x5F, UNMAPPED, Implicit),
-    Instruction(0x60, RTS, Implicit),
-    Instruction(0x61, ADC, IndirectX),
-    Instruction(0x62, UNMAPPED, Implicit),
-    Instruction(0x63, UNMAPPED, Implicit),
-    Instruction(0x64, UNMAPPED, Implicit),
-    Instruction(0x65, ADC, ZeroPage),
-    Instruction(0x66, ROR, ZeroPage),
-    Instruction(0x67, UNMAPPED, Implicit),
-    Instruction(0x68, PLA, Implicit),
-    Instruction(0x69, ADC, Immediate),
-    Instruction(0x6A, ROR, Accumulator),
-    Instruction(0x6B, UNMAPPED, Implicit),
-    Instruction(0x6C, JMP, Indirect),
-    Instruction(0x6D, ADC, Absolute),
-    Instruction(0x6E, ROR, Absolute),
-    Instruction(0x6F, UNMAPPED, Implicit),
-    Instruction(0x70, BVS, Relative),
-    Instruction(0x71, ADC, IndirectY),
-    Instruction(0x72, UNMAPPED, Implicit),
-    Instruction(0x73, UNMAPPED, Implicit),
-    Instruction(0x74, UNMAPPED, Implicit),
-    Instruction(0x75, ADC, ZeroPageX),
-    Instruction(0x76, ROR, ZeroPageX),
-    Instruction(0x77, UNMAPPED, Implicit),
-    Instruction(0x78, SEI, Implicit),
-    Instruction(0x79, ADC, AbsoluteY),
-    Instruction(0x7A, UNMAPPED, Implicit),
-    Instruction(0x7B, UNMAPPED, Implicit),
-    Instruction(0x7C, UNMAPPED, Implicit),
-    Instruction(0x7D, ADC, AbsoluteX),
-    Instruction(0x7E, ROR, AbsoluteX),
-    Instruction(0x7F, UNMAPPED, Implicit),
-    Instruction(0x80, UNMAPPED, Implicit),
-    Instruction(0x81, STA, IndirectX),
-    Instruction(0x82, UNMAPPED, Implicit),
-    Instruction(0x83, UNMAPPED, Implicit),
-    Instruction(0x84, STY, ZeroPage),
-    Instruction(0x85, STA, ZeroPage),
-    Instruction(0x86, STX, ZeroPage),
-    Instruction(0x87, UNMAPPED, Implicit),
-    Instruction(0x88, DEY, Implicit),
-    Instruction(0x89, UNMAPPED, Implicit),
-    Instruction(0x8A, TXA, Implicit),
-    Instruction(0x8B, UNMAPPED, Implicit),
-    Instruction(0x8C, STY, Absolute),
-    Instruction(0x8D, STA, Absolute),
-    Instruction(0x8E, STX, Absolute),
-    Instruction(0x8F, UNMAPPED, Implicit),
-    Instruction(0x90, BCC, Relative),
-    Instruction(0x91, STA, IndirectY),
-    Instruction(0x92, UNMAPPED, Implicit),
-    Instruction(0x93, UNMAPPED, Implicit),
-    Instruction(0x94, STY, ZeroPageX),
-    Instruction(0x95, STA, ZeroPageX),
-    Instruction(0x96, STX, ZeroPageY),
-    Instruction(0x97, UNMAPPED, Implicit),
-    Instruction(0x98, TYA, Implicit),
-    Instruction(0x99, STA, AbsoluteY),
-    Instruction(0x9A, TXS, Implicit),
-    Instruction(0x9B, UNMAPPED, Implicit),
-    Instruction(0x9C, UNMAPPED, Implicit),
-    Instruction(0x9D, STA, AbsoluteX),
-    Instruction(0x9E, UNMAPPED, Implicit),
-    Instruction(0x9F, UNMAPPED, Implicit),
-    Instruction(0xA0, LDY, Immediate),
-    Instruction(0xA1, LDA, IndirectX),
-    Instruction(0xA2, LDX, Immediate),
-    Instruction(0xA3, UNMAPPED, Implicit),
-    Instruction(0xA4, LDY, ZeroPage),
-    Instruction(0xA5, LDA, ZeroPage),
-    Instruction(0xA6, LDX, ZeroPage),
-    Instruction(0xA7, UNMAPPED, Implicit),
-    Instruction(0xA8, TAY, Implicit),
-    Instruction(0xA9, LDA, Immediate),
-    Instruction(0xAA, TAX, Implicit),
-    Instruction(0xAB, UNMAPPED, Implicit),
-    Instruction(0xAC, LDY, Absolute),
-    Instruction(0xAD, LDA, Absolute),
-    Instruction(0xAE, LDX, Absolute),
-    Instruction(0xAF, UNMAPPED, Implicit),
-    Instruction(0xB0, BCS, Relative),
-    Instruction(0xB1, LDA, IndirectY),
-    Instruction(0xB2, UNMAPPED, Implicit),
-    Instruction(0xB3, UNMAPPED, Implicit),
-    Instruction(0xB4, LDY, ZeroPageX),
-    Instruction(0xB5, LDA, ZeroPageX),
-    Instruction(0xB6, LDX, ZeroPageY),
-    Instruction(0xB7, UNMAPPED, Implicit),
-    Instruction(0xB8, CLV, Implicit),
-    Instruction(0xB9, LDA, AbsoluteY),
-    Instruction(0xBA, TSX, Implicit),
-    Instruction(0xBB, UNMAPPED, Implicit),
-    Instruction(0xBC, LDY, AbsoluteX),
-    Instruction(0xBD, LDA, AbsoluteX),
-    Instruction(0xBE, LDX, AbsoluteY),
-    Instruction(0xBF, UNMAPPED, Implicit),
-    Instruction(0xC0, CPY, Immediate),
-    Instruction(0xC1, CMP, IndirectX),
-    Instruction(0xC2, UNMAPPED, Implicit),
-    Instruction(0xC3, UNMAPPED, Implicit),
-    Instruction(0xC4, CPY, ZeroPage),
-    Instruction(0xC5, CMP, ZeroPage),
-    Instruction(0xC6, DEC, ZeroPage),
-    Instruction(0xC7, UNMAPPED, Implicit),
-    Instruction(0xC8, INY, Implicit),
-    Instruction(0xC9, CMP, Immediate),
-    Instruction(0xCA, DEX, Implicit),
-    Instruction(0xCB, UNMAPPED, Implicit),
-    Instruction(0xCC, CPY, Absolute),
-    Instruction(0xCD, CMP, Absolute),
-    Instruction(0xCE, DEC, Absolute),
-    Instruction(0xCF, UNMAPPED, Implicit),
-    Instruction(0xD0, BNE, Relative),
-    Instruction(0xD1, CMP, IndirectY),
-    Instruction(0xD2, UNMAPPED, Implicit),
-    Instruction(0xD3, UNMAPPED, Implicit),
-    Instruction(0xD4, UNMAPPED, Implicit),
-    Instruction(0xD5, CMP, ZeroPageX),
-    Instruction(0xD6, DEC, ZeroPageX),
-    Instruction(0xD7, UNMAPPED, Implicit),
-    Instruction(0xD8, CLD, Implicit),
-    Instruction(0xD9, CMP, AbsoluteY),
-    Instruction(0xDA, UNMAPPED, Implicit),
-    Instruction(0xDB, UNMAPPED, Implicit),
-    Instruction(0xDC, UNMAPPED, Implicit),
-    Instruction(0xDD, CMP, AbsoluteX),
-    Instruction(0xDE, DEC, AbsoluteX),
-    Instruction(0xDF, UNMAPPED, Implicit),
-    Instruction(0xE0, CPX, Immediate),
-    Instruction(0xE1, SBC, IndirectX),
-    Instruction(0xE2, UNMAPPED, Implicit),
-    Instruction(0xE3, UNMAPPED, Implicit),
-    Instruction(0xE4, CPX, ZeroPage),
-    Instruction(0xE5, SBC, ZeroPage),
-    Instruction(0xE6, INC, ZeroPage),
-    Instruction(0xE7, UNMAPPED, Implicit),
-    Instruction(0xE8, INX, Implicit),
-    Instruction(0xE9, SBC, Immediate),
-    Instruction(0xEA, NOP, Implicit),
-    Instruction(0xEB, UNMAPPED, Implicit),
-    Instruction(0xEC, CPX, Absolute),
-    Instruction(0xED, SBC, Absolute),
-    Instruction(0xEE, INC, Absolute),
-    Instruction(0xEF, UNMAPPED, Implicit),
-    Instruction(0xF0, BEQ, Relative),
-    Instruction(0xF1, SBC, IndirectY),
-    Instruction(0xF2, UNMAPPED, Implicit),
-    Instruction(0xF3, UNMAPPED, Implicit),
-    Instruction(0xF4, UNMAPPED, Implicit),
-    Instruction(0xF5, SBC, ZeroPageX),
-    Instruction(0xF6, INC, ZeroPageX),
-    Instruction(0xF7, UNMAPPED, Implicit),
-    Instruction(0xF8, SED, Implicit),
-    Instruction(0xF9, SBC, AbsoluteY),
-    Instruction(0xFA, UNMAPPED, Implicit),
-    Instruction(0xFB, UNMAPPED, Implicit),
-    Instruction(0xFC, UNMAPPED, Implicit),
-    Instruction(0xFD, SBC, AbsoluteX),
-    Instruction(0xFE, INC, AbsoluteX),
-    Instruction(0xFF, UNMAPPED, Implicit),
+// Cycle counts are from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
+const INSTRUCTIONS: [Instruction; 0x100] = [
+    Instruction::new(0x00, BRK, Implicit, 7),
+    Instruction::new(0x01, ORA, IndirectX, 6),
+    Instruction::new(0x02, UNMAPPED, Implicit, 1),
+    Instruction::new(0x03, UNMAPPED, Implicit, 8),
+    Instruction::new(0x04, UNMAPPED, Implicit, 3),
+    Instruction::new(0x05, ORA, ZeroPage, 3),
+    Instruction::new(0x06, ASL, ZeroPage, 5),
+    Instruction::new(0x07, UNMAPPED, Implicit, 5),
+    Instruction::new(0x08, PHP, Implicit, 3),
+    Instruction::new(0x09, ORA, Immediate, 2),
+    Instruction::new(0x0A, ASL, Accumulator, 2),
+    Instruction::new(0x0B, UNMAPPED, Implicit, 2),
+    Instruction::new(0x0C, UNMAPPED, Implicit, 4),
+    Instruction::new(0x0D, ORA, Absolute, 4),
+    Instruction::new(0x0E, ASL, Absolute, 6),
+    Instruction::new(0x0F, UNMAPPED, Implicit, 6),
+    Instruction::new(0x10, BPL, Relative, 2),
+    Instruction::new(0x11, ORA, IndirectY, 5),
+    Instruction::new(0x12, UNMAPPED, Implicit, 1),
+    Instruction::new(0x13, UNMAPPED, Implicit, 8),
+    Instruction::new(0x14, UNMAPPED, Implicit, 4),
+    Instruction::new(0x15, ORA, ZeroPageX, 4),
+    Instruction::new(0x16, ASL, ZeroPageX, 6),
+    Instruction::new(0x17, UNMAPPED, Implicit, 6),
+    Instruction::new(0x18, CLC, Implicit, 2),
+    Instruction::new(0x19, ORA, AbsoluteY, 4),
+    Instruction::new(0x1A, UNMAPPED, Implicit, 2),
+    Instruction::new(0x1B, UNMAPPED, Implicit, 7),
+    Instruction::new(0x1C, UNMAPPED, Implicit, 4),
+    Instruction::new(0x1D, ORA, AbsoluteX, 4),
+    Instruction::new(0x1E, ASL, AbsoluteX, 7),
+    Instruction::new(0x1F, UNMAPPED, Implicit, 7),
+    Instruction::new(0x20, JSR, Absolute, 6),
+    Instruction::new(0x21, AND, IndirectX, 6),
+    Instruction::new(0x22, UNMAPPED, Implicit, 1),
+    Instruction::new(0x23, UNMAPPED, Implicit, 8),
+    Instruction::new(0x24, BIT, ZeroPage, 3),
+    Instruction::new(0x25, AND, ZeroPage, 3),
+    Instruction::new(0x26, ROL, ZeroPage, 5),
+    Instruction::new(0x27, UNMAPPED, Implicit, 5),
+    Instruction::new(0x28, PLP, Implicit, 4),
+    Instruction::new(0x29, AND, Immediate, 2),
+    Instruction::new(0x2A, ROL, Accumulator, 2),
+    Instruction::new(0x2B, UNMAPPED, Implicit, 2),
+    Instruction::new(0x2C, BIT, Absolute, 4),
+    Instruction::new(0x2D, AND, Absolute, 4),
+    Instruction::new(0x2E, ROL, Absolute, 6),
+    Instruction::new(0x2F, UNMAPPED, Implicit, 6),
+    Instruction::new(0x30, BMI, Relative, 2),
+    Instruction::new(0x31, AND, IndirectY, 5),
+    Instruction::new(0x32, UNMAPPED, Implicit, 1),
+    Instruction::new(0x33, UNMAPPED, Implicit, 8),
+    Instruction::new(0x34, UNMAPPED, Implicit, 4),
+    Instruction::new(0x35, AND, ZeroPageX, 4),
+    Instruction::new(0x36, ROL, ZeroPageX, 6),
+    Instruction::new(0x37, UNMAPPED, Implicit, 6),
+    Instruction::new(0x38, SEC, Implicit, 2),
+    Instruction::new(0x39, AND, AbsoluteY, 4),
+    Instruction::new(0x3A, UNMAPPED, Implicit, 2),
+    Instruction::new(0x3B, UNMAPPED, Implicit, 7),
+    Instruction::new(0x3C, UNMAPPED, Implicit, 4),
+    Instruction::new(0x3D, AND, AbsoluteX, 4),
+    Instruction::new(0x3E, ROL, AbsoluteX, 7),
+    Instruction::new(0x3F, UNMAPPED, Implicit, 7),
+    Instruction::new(0x40, RTI, Implicit, 6),
+    Instruction::new(0x41, EOR, IndirectX, 6),
+    Instruction::new(0x42, UNMAPPED, Implicit, 1),
+    Instruction::new(0x43, UNMAPPED, Implicit, 8),
+    Instruction::new(0x44, UNMAPPED, Implicit, 3),
+    Instruction::new(0x45, EOR, ZeroPage, 3),
+    Instruction::new(0x46, LSR, ZeroPage, 5),
+    Instruction::new(0x47, UNMAPPED, Implicit, 5),
+    Instruction::new(0x48, PHA, Implicit, 3),
+    Instruction::new(0x49, EOR, Immediate, 2),
+    Instruction::new(0x4A, LSR, Accumulator, 2),
+    Instruction::new(0x4B, UNMAPPED, Implicit, 2),
+    Instruction::new(0x4C, JMP, Absolute, 3),
+    Instruction::new(0x4D, EOR, Absolute, 4),
+    Instruction::new(0x4E, LSR, Absolute, 6),
+    Instruction::new(0x4F, UNMAPPED, Implicit, 6),
+    Instruction::new(0x50, BVC, Relative, 2),
+    Instruction::new(0x51, EOR, IndirectY, 5),
+    Instruction::new(0x52, UNMAPPED, Implicit, 1),
+    Instruction::new(0x53, UNMAPPED, Implicit, 8),
+    Instruction::new(0x54, UNMAPPED, Implicit, 4),
+    Instruction::new(0x55, EOR, ZeroPageX, 4),
+    Instruction::new(0x56, LSR, ZeroPageX, 6),
+    Instruction::new(0x57, UNMAPPED, Implicit, 6),
+    Instruction::new(0x58, CLI, Implicit, 2),
+    Instruction::new(0x59, EOR, AbsoluteY, 4),
+    Instruction::new(0x5A, UNMAPPED, Implicit, 2),
+    Instruction::new(0x5B, UNMAPPED, Implicit, 7),
+    Instruction::new(0x5C, UNMAPPED, Implicit, 4),
+    Instruction::new(0x5D, EOR, AbsoluteX, 4),
+    Instruction::new(0x5E, LSR, AbsoluteX, 7),
+    Instruction::new(0x5F, UNMAPPED, Implicit, 7),
+    Instruction::new(0x60, RTS, Implicit, 6),
+    Instruction::new(0x61, ADC, IndirectX, 6),
+    Instruction::new(0x62, UNMAPPED, Implicit, 1),
+    Instruction::new(0x63, UNMAPPED, Implicit, 8),
+    Instruction::new(0x64, UNMAPPED, Implicit, 3),
+    Instruction::new(0x65, ADC, ZeroPage, 3),
+    Instruction::new(0x66, ROR, ZeroPage, 5),
+    Instruction::new(0x67, UNMAPPED, Implicit, 5),
+    Instruction::new(0x68, PLA, Implicit, 4),
+    Instruction::new(0x69, ADC, Immediate, 2),
+    Instruction::new(0x6A, ROR, Accumulator, 2),
+    Instruction::new(0x6B, UNMAPPED, Implicit, 2),
+    Instruction::new(0x6C, JMP, Indirect, 5),
+    Instruction::new(0x6D, ADC, Absolute, 4),
+    Instruction::new(0x6E, ROR, Absolute, 6),
+    Instruction::new(0x6F, UNMAPPED, Implicit, 6),
+    Instruction::new(0x70, BVS, Relative, 2),
+    Instruction::new(0x71, ADC, IndirectY, 5),
+    Instruction::new(0x72, UNMAPPED, Implicit, 1),
+    Instruction::new(0x73, UNMAPPED, Implicit, 8),
+    Instruction::new(0x74, UNMAPPED, Implicit, 4),
+    Instruction::new(0x75, ADC, ZeroPageX, 4),
+    Instruction::new(0x76, ROR, ZeroPageX, 6),
+    Instruction::new(0x77, UNMAPPED, Implicit, 6),
+    Instruction::new(0x78, SEI, Implicit, 2),
+    Instruction::new(0x79, ADC, AbsoluteY, 4),
+    Instruction::new(0x7A, UNMAPPED, Implicit, 2),
+    Instruction::new(0x7B, UNMAPPED, Implicit, 7),
+    Instruction::new(0x7C, UNMAPPED, Implicit, 4),
+    Instruction::new(0x7D, ADC, AbsoluteX, 4),
+    Instruction::new(0x7E, ROR, AbsoluteX, 7),
+    Instruction::new(0x7F, UNMAPPED, Implicit, 7),
+    Instruction::new(0x80, UNMAPPED, Implicit, 2),
+    Instruction::new(0x81, STA, IndirectX, 6),
+    Instruction::new(0x82, UNMAPPED, Implicit, 2),
+    Instruction::new(0x83, UNMAPPED, Implicit, 6),
+    Instruction::new(0x84, STY, ZeroPage, 3),
+    Instruction::new(0x85, STA, ZeroPage, 3),
+    Instruction::new(0x86, STX, ZeroPage, 3),
+    Instruction::new(0x87, UNMAPPED, Implicit, 3),
+    Instruction::new(0x88, DEY, Implicit, 2),
+    Instruction::new(0x89, UNMAPPED, Implicit, 2),
+    Instruction::new(0x8A, TXA, Implicit, 2),
+    Instruction::new(0x8B, UNMAPPED, Implicit, 2),
+    Instruction::new(0x8C, STY, Absolute, 4),
+    Instruction::new(0x8D, STA, Absolute, 4),
+    Instruction::new(0x8E, STX, Absolute, 4),
+    Instruction::new(0x8F, UNMAPPED, Implicit, 4),
+    Instruction::new(0x90, BCC, Relative, 2),
+    Instruction::new(0x91, STA, IndirectY, 6),
+    Instruction::new(0x92, UNMAPPED, Implicit, 1),
+    Instruction::new(0x93, UNMAPPED, Implicit, 6),
+    Instruction::new(0x94, STY, ZeroPageX, 4),
+    Instruction::new(0x95, STA, ZeroPageX, 4),
+    Instruction::new(0x96, STX, ZeroPageY, 4),
+    Instruction::new(0x97, UNMAPPED, Implicit, 4),
+    Instruction::new(0x98, TYA, Implicit, 2),
+    Instruction::new(0x99, STA, AbsoluteY, 5),
+    Instruction::new(0x9A, TXS, Implicit, 2),
+    Instruction::new(0x9B, UNMAPPED, Implicit, 5),
+    Instruction::new(0x9C, UNMAPPED, Implicit, 5),
+    Instruction::new(0x9D, STA, AbsoluteX, 5),
+    Instruction::new(0x9E, UNMAPPED, Implicit, 5),
+    Instruction::new(0x9F, UNMAPPED, Implicit, 5),
+    Instruction::new(0xA0, LDY, Immediate, 2),
+    Instruction::new(0xA1, LDA, IndirectX, 6),
+    Instruction::new(0xA2, LDX, Immediate, 2),
+    Instruction::new(0xA3, UNMAPPED, Implicit, 6),
+    Instruction::new(0xA4, LDY, ZeroPage, 3),
+    Instruction::new(0xA5, LDA, ZeroPage, 3),
+    Instruction::new(0xA6, LDX, ZeroPage, 3),
+    Instruction::new(0xA7, UNMAPPED, Implicit, 3),
+    Instruction::new(0xA8, TAY, Implicit, 2),
+    Instruction::new(0xA9, LDA, Immediate, 2),
+    Instruction::new(0xAA, TAX, Implicit, 2),
+    Instruction::new(0xAB, UNMAPPED, Implicit, 2),
+    Instruction::new(0xAC, LDY, Absolute, 4),
+    Instruction::new(0xAD, LDA, Absolute, 4),
+    Instruction::new(0xAE, LDX, Absolute, 4),
+    Instruction::new(0xAF, UNMAPPED, Implicit, 4),
+    Instruction::new(0xB0, BCS, Relative, 2),
+    Instruction::new(0xB1, LDA, IndirectY, 5),
+    Instruction::new(0xB2, UNMAPPED, Implicit, 1),
+    Instruction::new(0xB3, UNMAPPED, Implicit, 5),
+    Instruction::new(0xB4, LDY, ZeroPageX, 4),
+    Instruction::new(0xB5, LDA, ZeroPageX, 4),
+    Instruction::new(0xB6, LDX, ZeroPageY, 4),
+    Instruction::new(0xB7, UNMAPPED, Implicit, 4),
+    Instruction::new(0xB8, CLV, Implicit, 2),
+    Instruction::new(0xB9, LDA, AbsoluteY, 4),
+    Instruction::new(0xBA, TSX, Implicit, 2),
+    Instruction::new(0xBB, UNMAPPED, Implicit, 4),
+    Instruction::new(0xBC, LDY, AbsoluteX, 4),
+    Instruction::new(0xBD, LDA, AbsoluteX, 4),
+    Instruction::new(0xBE, LDX, AbsoluteY, 4),
+    Instruction::new(0xBF, UNMAPPED, Implicit, 4),
+    Instruction::new(0xC0, CPY, Immediate, 2),
+    Instruction::new(0xC1, CMP, IndirectX, 6),
+    Instruction::new(0xC2, UNMAPPED, Implicit, 2),
+    Instruction::new(0xC3, UNMAPPED, Implicit, 8),
+    Instruction::new(0xC4, CPY, ZeroPage, 3),
+    Instruction::new(0xC5, CMP, ZeroPage, 3),
+    Instruction::new(0xC6, DEC, ZeroPage, 5),
+    Instruction::new(0xC7, UNMAPPED, Implicit, 5),
+    Instruction::new(0xC8, INY, Implicit, 2),
+    Instruction::new(0xC9, CMP, Immediate, 2),
+    Instruction::new(0xCA, DEX, Implicit, 2),
+    Instruction::new(0xCB, UNMAPPED, Implicit, 2),
+    Instruction::new(0xCC, CPY, Absolute, 4),
+    Instruction::new(0xCD, CMP, Absolute, 4),
+    Instruction::new(0xCE, DEC, Absolute, 6),
+    Instruction::new(0xCF, UNMAPPED, Implicit, 6),
+    Instruction::new(0xD0, BNE, Relative, 2),
+    Instruction::new(0xD1, CMP, IndirectY, 5),
+    Instruction::new(0xD2, UNMAPPED, Implicit, 1),
+    Instruction::new(0xD3, UNMAPPED, Implicit, 8),
+    Instruction::new(0xD4, UNMAPPED, Implicit, 4),
+    Instruction::new(0xD5, CMP, ZeroPageX, 4),
+    Instruction::new(0xD6, DEC, ZeroPageX, 6),
+    Instruction::new(0xD7, UNMAPPED, Implicit, 6),
+    Instruction::new(0xD8, CLD, Implicit, 2),
+    Instruction::new(0xD9, CMP, AbsoluteY, 4),
+    Instruction::new(0xDA, UNMAPPED, Implicit, 2),
+    Instruction::new(0xDB, UNMAPPED, Implicit, 7),
+    Instruction::new(0xDC, UNMAPPED, Implicit, 4),
+    Instruction::new(0xDD, CMP, AbsoluteX, 4),
+    Instruction::new(0xDE, DEC, AbsoluteX, 7),
+    Instruction::new(0xDF, UNMAPPED, Implicit, 7),
+    Instruction::new(0xE0, CPX, Immediate, 2),
+    Instruction::new(0xE1, SBC, IndirectX, 6),
+    Instruction::new(0xE2, UNMAPPED, Implicit, 2),
+    Instruction::new(0xE3, UNMAPPED, Implicit, 8),
+    Instruction::new(0xE4, CPX, ZeroPage, 3),
+    Instruction::new(0xE5, SBC, ZeroPage, 3),
+    Instruction::new(0xE6, INC, ZeroPage, 5),
+    Instruction::new(0xE7, UNMAPPED, Implicit, 5),
+    Instruction::new(0xE8, INX, Implicit, 2),
+    Instruction::new(0xE9, SBC, Immediate, 2),
+    Instruction::new(0xEA, NOP, Implicit, 2),
+    Instruction::new(0xEB, UNMAPPED, Implicit, 2),
+    Instruction::new(0xEC, CPX, Absolute, 4),
+    Instruction::new(0xED, SBC, Absolute, 4),
+    Instruction::new(0xEE, INC, Absolute, 6),
+    Instruction::new(0xEF, UNMAPPED, Implicit, 6),
+    Instruction::new(0xF0, BEQ, Relative, 2),
+    Instruction::new(0xF1, SBC, IndirectY, 5),
+    Instruction::new(0xF2, UNMAPPED, Implicit, 1),
+    Instruction::new(0xF3, UNMAPPED, Implicit, 8),
+    Instruction::new(0xF4, UNMAPPED, Implicit, 4),
+    Instruction::new(0xF5, SBC, ZeroPageX, 4),
+    Instruction::new(0xF6, INC, ZeroPageX, 6),
+    Instruction::new(0xF7, UNMAPPED, Implicit, 6),
+    Instruction::new(0xF8, SED, Implicit, 2),
+    Instruction::new(0xF9, SBC, AbsoluteY, 4),
+    Instruction::new(0xFA, UNMAPPED, Implicit, 2),
+    Instruction::new(0xFB, UNMAPPED, Implicit, 7),
+    Instruction::new(0xFC, UNMAPPED, Implicit, 4),
+    Instruction::new(0xFD, SBC, AbsoluteX, 4),
+    Instruction::new(0xFE, INC, AbsoluteX, 7),
+    Instruction::new(0xFF, UNMAPPED, Implicit, 7),
 ];
 
 // TODO: these four functions are almost certainly not correct
@@ -407,9 +429,9 @@ const fn carrying_sub_overflows(lhs: u8, rhs: u8, carry: bool) -> bool {
 }
 
 fn process_branch(machine: &mut Machine) {
-    let offset = machine.fetch_byte(machine.program_counter.wrapping_sub(1));
+    let offset = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1));
     // Offset is sign-extended
-    machine.program_counter = machine.program_counter.wrapping_add_signed(offset as i8 as i16);
+    machine.cpu.program_counter = machine.cpu.program_counter.wrapping_add_signed(offset as i8 as i16);
 }
 
 const UNMAPPED: Operation = Operation {
@@ -425,14 +447,14 @@ const ADC: Operation = Operation {
     mnemonic: "ADC",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let addend = machine.fetch_byte(address);
-        let carry_in = machine.get_flag(Machine::CARRY_FLAG);
-        let (result, carry_out) = carrying_add(machine.accumulator, addend, carry_in);
-        let overflows = carrying_add_overflows(machine.accumulator, addend, carry_in);
-        machine.accumulator = result;
+        let addend = machine.read_byte(address);
+        let carry_in = machine.get_flag(CARRY_FLAG);
+        let (result, carry_out) = carrying_add(machine.cpu.accumulator, addend, carry_in);
+        let overflows = carrying_add_overflows(machine.cpu.accumulator, addend, carry_in);
+        machine.cpu.accumulator = result;
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
-        machine.set_flag(Machine::OVERFLOW_FLAG, overflows);
+        machine.set_flag(CARRY_FLAG, carry_out);
+        machine.set_flag(OVERFLOW_FLAG, overflows);
         machine.set_result_flags(result);
     },
 };
@@ -443,9 +465,9 @@ const AND: Operation = Operation {
     mnemonic: "AND",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.accumulator &= machine.fetch_byte(address);
+        machine.cpu.accumulator &= machine.read_byte(address);
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -457,19 +479,19 @@ const ASL: Operation = Operation {
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
-            carry_out = (machine.accumulator & 0x80) != 0;
-            result = machine.accumulator << 1;
-            machine.accumulator = result;
+            carry_out = (machine.cpu.accumulator & 0x80) != 0;
+            result = machine.cpu.accumulator << 1;
+            machine.cpu.accumulator = result;
         }
         else {
             let address = addressing_mode.calculate_address(machine);
-            let value = machine.fetch_byte(address);
+            let value = machine.read_byte(address);
             carry_out = (value & 0x80) != 0;
             result = value << 1;
-            machine.store_byte(address, result);
+            machine.write_byte(address, result);
         }
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
+        machine.set_flag(CARRY_FLAG, carry_out);
         machine.set_result_flags(result);
     },
 };
@@ -479,7 +501,7 @@ const ASL: Operation = Operation {
 const BCC: Operation = Operation {
     mnemonic: "BCC",
     function: |_, machine| {
-        if !machine.get_flag(Machine::CARRY_FLAG) {
+        if !machine.get_flag(CARRY_FLAG) {
             process_branch(machine);
         }
     },
@@ -490,7 +512,7 @@ const BCC: Operation = Operation {
 const BCS: Operation = Operation {
     mnemonic: "BCS",
     function: |_, machine| {
-        if machine.get_flag(Machine::CARRY_FLAG) {
+        if machine.get_flag(CARRY_FLAG) {
             process_branch(machine);
         }
     },
@@ -501,7 +523,7 @@ const BCS: Operation = Operation {
 const BEQ: Operation = Operation {
     mnemonic: "BEQ",
     function: |_, machine| {
-        if machine.get_flag(Machine::ZERO_FLAG) {
+        if machine.get_flag(ZERO_FLAG) {
             process_branch(machine);
         }
     },
@@ -513,9 +535,9 @@ const BIT: Operation = Operation {
     mnemonic: "BIT",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let result = machine.fetch_byte(address) & machine.accumulator;
+        let result = machine.read_byte(address) & machine.cpu.accumulator;
 
-        machine.set_flag(Machine::OVERFLOW_FLAG, (result & 0x40) != 0);
+        machine.set_flag(OVERFLOW_FLAG, (result & 0x40) != 0);
         machine.set_result_flags(result);
     },
 };
@@ -525,7 +547,7 @@ const BIT: Operation = Operation {
 const BMI: Operation = Operation {
     mnemonic: "BMI",
     function: |_, machine| {
-        if machine.get_flag(Machine::NEGATIVE_FLAG) {
+        if machine.get_flag(NEGATIVE_FLAG) {
             process_branch(machine);
         }
     },
@@ -536,7 +558,7 @@ const BMI: Operation = Operation {
 const BNE: Operation = Operation {
     mnemonic: "BNE",
     function: |_, machine| {
-        if !machine.get_flag(Machine::ZERO_FLAG) {
+        if !machine.get_flag(ZERO_FLAG) {
             process_branch(machine);
         }
     },
@@ -547,7 +569,7 @@ const BNE: Operation = Operation {
 const BPL: Operation = Operation {
     mnemonic: "BPL",
     function: |_, machine| {
-        if !machine.get_flag(Machine::NEGATIVE_FLAG) {
+        if !machine.get_flag(NEGATIVE_FLAG) {
             process_branch(machine);
         }
     },
@@ -558,10 +580,10 @@ const BPL: Operation = Operation {
 const BRK: Operation = Operation {
     mnemonic: "BRK",
     function: |_, machine| {
-        machine.stack_push_pair(machine.program_counter);
+        machine.stack_push_pair(machine.cpu.program_counter);
         machine.stack_push_byte(machine.get_status_byte());
-        machine.program_counter = machine.fetch_pair(Machine::IRQ_ADDRESS);
-        machine.set_flag(Machine::BREAK_FLAG, true);
+        machine.cpu.program_counter = machine.read_pair(IRQ_VECTOR);
+        machine.set_flag(BREAK_FLAG, true);
     },
 };
 
@@ -570,7 +592,7 @@ const BRK: Operation = Operation {
 const BVC: Operation = Operation {
     mnemonic: "BVC",
     function: |_, machine| {
-        if !machine.get_flag(Machine::OVERFLOW_FLAG) {
+        if !machine.get_flag(OVERFLOW_FLAG) {
             process_branch(machine);
         }
     },
@@ -581,7 +603,7 @@ const BVC: Operation = Operation {
 const BVS: Operation = Operation {
     mnemonic: "BVS",
     function: |_, machine| {
-        if machine.get_flag(Machine::OVERFLOW_FLAG) {
+        if machine.get_flag(OVERFLOW_FLAG) {
             process_branch(machine);
         }
     },
@@ -592,7 +614,7 @@ const BVS: Operation = Operation {
 const CLC: Operation = Operation {
     mnemonic: "CLC",
     function: |_, machine| {
-        machine.set_flag(Machine::CARRY_FLAG, false);
+        machine.set_flag(CARRY_FLAG, false);
     },
 };
 
@@ -602,7 +624,7 @@ const CLD: Operation = Operation {
     mnemonic: "CLD",
     function: |_, machine| {
         // NOTE: BCD mode is disabled in the Ricoh 2A03
-        machine.set_flag(Machine::DECIMAL_FLAG, false);
+        machine.set_flag(DECIMAL_FLAG, false);
     },
 };
 
@@ -611,7 +633,7 @@ const CLD: Operation = Operation {
 const CLI: Operation = Operation {
     mnemonic: "CLI",
     function: |_, machine| {
-        machine.set_flag(Machine::INTERRUPT_DISABLE_FLAG, false);
+        machine.set_flag(INTERRUPT_DISABLE_FLAG, false);
     },
 };
 
@@ -620,7 +642,7 @@ const CLI: Operation = Operation {
 const CLV: Operation = Operation {
     mnemonic: "CLV",
     function: |_, machine| {
-        machine.set_flag(Machine::OVERFLOW_FLAG, false);
+        machine.set_flag(OVERFLOW_FLAG, false);
     },
 };
 
@@ -630,10 +652,10 @@ const CMP: Operation = Operation {
     mnemonic: "CMP",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let value = machine.fetch_byte(address);
-        let result = machine.accumulator.wrapping_sub(value);
+        let value = machine.read_byte(address);
+        let result = machine.cpu.accumulator.wrapping_sub(value);
 
-        machine.set_flag(Machine::CARRY_FLAG, machine.accumulator as i8 >= value as i8);
+        machine.set_flag(CARRY_FLAG, machine.cpu.accumulator as i8 >= value as i8);
         machine.set_result_flags(result);
     },
 };
@@ -644,10 +666,10 @@ const CPX: Operation = Operation {
     mnemonic: "CPX",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let value = machine.fetch_byte(address);
-        let result = machine.register_x.wrapping_sub(value);
+        let value = machine.read_byte(address);
+        let result = machine.cpu.register_x.wrapping_sub(value);
 
-        machine.set_flag(Machine::CARRY_FLAG, machine.register_x as i8 >= value as i8);
+        machine.set_flag(CARRY_FLAG, machine.cpu.register_x as i8 >= value as i8);
         machine.set_result_flags(result);
     },
 };
@@ -658,10 +680,10 @@ const CPY: Operation = Operation {
     mnemonic: "CPY",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let value = machine.fetch_byte(address);
-        let result = machine.register_y.wrapping_sub(value);
+        let value = machine.read_byte(address);
+        let result = machine.cpu.register_y.wrapping_sub(value);
 
-        machine.set_flag(Machine::CARRY_FLAG, machine.register_y as i8 >= value as i8);
+        machine.set_flag(CARRY_FLAG, machine.cpu.register_y as i8 >= value as i8);
         machine.set_result_flags(result);
     },
 };
@@ -672,8 +694,8 @@ const DEC: Operation = Operation {
     mnemonic: "DEC",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let result = machine.fetch_byte(address).wrapping_sub(1);
-        machine.store_byte(address, result);
+        let result = machine.read_byte(address).wrapping_sub(1);
+        machine.write_byte(address, result);
 
         machine.set_result_flags(result);
     },
@@ -684,9 +706,9 @@ const DEC: Operation = Operation {
 const DEX: Operation = Operation {
     mnemonic: "DEX",
     function: |_, machine| {
-        machine.register_x = machine.register_x.wrapping_sub(1);
+        machine.cpu.register_x = machine.cpu.register_x.wrapping_sub(1);
 
-        machine.set_result_flags(machine.register_x);
+        machine.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -695,9 +717,9 @@ const DEX: Operation = Operation {
 const DEY: Operation = Operation {
     mnemonic: "DEY",
     function: |_, machine| {
-        machine.register_y = machine.register_y.wrapping_sub(1);
+        machine.cpu.register_y = machine.cpu.register_y.wrapping_sub(1);
 
-        machine.set_result_flags(machine.register_y);
+        machine.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -707,9 +729,9 @@ const EOR: Operation = Operation {
     mnemonic: "EOR",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.accumulator ^= machine.fetch_byte(address);
+        machine.cpu.accumulator ^= machine.read_byte(address);
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -719,8 +741,8 @@ const INC: Operation = Operation {
     mnemonic: "INC",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        let result = machine.fetch_byte(address).wrapping_add(1);
-        machine.store_byte(address, result);
+        let result = machine.read_byte(address).wrapping_add(1);
+        machine.write_byte(address, result);
 
         machine.set_result_flags(result);
     },
@@ -731,9 +753,9 @@ const INC: Operation = Operation {
 const INX: Operation = Operation {
     mnemonic: "INX",
     function: |_, machine| {
-        machine.register_x = machine.register_x.wrapping_add(1);
+        machine.cpu.register_x = machine.cpu.register_x.wrapping_add(1);
 
-        machine.set_result_flags(machine.register_x);
+        machine.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -742,9 +764,9 @@ const INX: Operation = Operation {
 const INY: Operation = Operation {
     mnemonic: "INY",
     function: |_, machine| {
-        machine.register_y = machine.register_y.wrapping_add(1);
+        machine.cpu.register_y = machine.cpu.register_y.wrapping_add(1);
 
-        machine.set_result_flags(machine.register_y);
+        machine.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -754,7 +776,7 @@ const JMP: Operation = Operation {
     mnemonic: "JMP",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.program_counter = address;
+        machine.cpu.program_counter = address;
     },
 };
 
@@ -764,8 +786,8 @@ const JSR: Operation = Operation {
     mnemonic: "JSR",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.stack_push_pair(machine.program_counter);
-        machine.program_counter = address;
+        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.cpu.program_counter = address;
     },
 };
 
@@ -775,9 +797,9 @@ const LDA: Operation = Operation {
     mnemonic: "LDA",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.accumulator = machine.fetch_byte(address);
+        machine.cpu.accumulator = machine.read_byte(address);
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -787,9 +809,9 @@ const LDX: Operation = Operation {
     mnemonic: "LDX",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.register_x = machine.fetch_byte(address);
+        machine.cpu.register_x = machine.read_byte(address);
 
-        machine.set_result_flags(machine.register_x);
+        machine.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -799,9 +821,9 @@ const LDY: Operation = Operation {
     mnemonic: "LDY",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.register_y = machine.fetch_byte(address);
+        machine.cpu.register_y = machine.read_byte(address);
 
-        machine.set_result_flags(machine.register_y);
+        machine.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -813,19 +835,19 @@ const LSR: Operation = Operation {
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
-            carry_out = (machine.accumulator & 1) != 0;
-            result = machine.accumulator >> 1;
-            machine.accumulator = result;
+            carry_out = (machine.cpu.accumulator & 1) != 0;
+            result = machine.cpu.accumulator >> 1;
+            machine.cpu.accumulator = result;
         }
         else {
             let address = addressing_mode.calculate_address(machine);
-            let value = machine.fetch_byte(address);
+            let value = machine.read_byte(address);
             carry_out = (value & 1) != 0;
             result = value >> 1;
-            machine.store_byte(address, result);
+            machine.write_byte(address, result);
         }
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
+        machine.set_flag(CARRY_FLAG, carry_out);
         machine.set_result_flags(result);
     },
 };
@@ -845,9 +867,9 @@ const ORA: Operation = Operation {
     mnemonic: "ORA",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.accumulator |= machine.fetch_byte(address);
+        machine.cpu.accumulator |= machine.read_byte(address);
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -856,7 +878,7 @@ const ORA: Operation = Operation {
 const PHA: Operation = Operation {
     mnemonic: "PHA",
     function: |_, machine| {
-        machine.stack_push_byte(machine.accumulator);
+        machine.stack_push_byte(machine.cpu.accumulator);
     },
 };
 
@@ -874,9 +896,9 @@ const PHP: Operation = Operation {
 const PLA: Operation = Operation {
     mnemonic: "PLA",
     function: |_, machine| {
-        machine.accumulator = machine.stack_pull_byte();
+        machine.cpu.accumulator = machine.stack_pull_byte();
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -895,23 +917,23 @@ const PLP: Operation = Operation {
 const ROL: Operation = Operation {
     mnemonic: "ROL",
     function: |addressing_mode, machine| {
-        let carry_in = machine.get_flag(Machine::CARRY_FLAG);
+        let carry_in = machine.get_flag(CARRY_FLAG);
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
-            carry_out = (machine.accumulator & 0x80) != 0;
-            result = machine.accumulator << 1 | carry_in as u8;
-            machine.accumulator = result;
+            carry_out = (machine.cpu.accumulator & 0x80) != 0;
+            result = machine.cpu.accumulator << 1 | carry_in as u8;
+            machine.cpu.accumulator = result;
         }
         else {
             let address = addressing_mode.calculate_address(machine);
-            let value = machine.fetch_byte(address);
+            let value = machine.read_byte(address);
             carry_out = (value & 0x80) != 0;
             result = value << 1 | carry_in as u8;
-            machine.store_byte(address, result);
+            machine.write_byte(address, result);
         }
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
+        machine.set_flag(CARRY_FLAG, carry_out);
         machine.set_result_flags(result);
     },
 };
@@ -921,23 +943,23 @@ const ROL: Operation = Operation {
 const ROR: Operation = Operation {
     mnemonic: "ROR",
     function: |addressing_mode, machine| {
-        let carry_in = machine.get_flag(Machine::CARRY_FLAG);
+        let carry_in = machine.get_flag(CARRY_FLAG);
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
-            carry_out = (machine.accumulator & 1) != 0;
-            result = machine.accumulator >> 1 | (carry_in as u8) << 7;
-            machine.accumulator = result;
+            carry_out = (machine.cpu.accumulator & 1) != 0;
+            result = machine.cpu.accumulator >> 1 | (carry_in as u8) << 7;
+            machine.cpu.accumulator = result;
         }
         else {
             let address = addressing_mode.calculate_address(machine);
-            let value = machine.fetch_byte(address);
+            let value = machine.read_byte(address);
             carry_out = (value & 1) != 0;
             result = value >> 1 | (carry_in as u8) << 7;
-            machine.store_byte(address, result);
+            machine.write_byte(address, result);
         }
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
+        machine.set_flag(CARRY_FLAG, carry_out);
         machine.set_result_flags(result);
     },
 };
@@ -950,7 +972,7 @@ const RTI: Operation = Operation {
         let status_byte = machine.stack_pull_byte();
         let program_counter = machine.stack_pull_pair();
         machine.set_status_byte(status_byte);
-        machine.program_counter = program_counter;
+        machine.cpu.program_counter = program_counter;
     },
 };
 
@@ -961,7 +983,7 @@ const RTS: Operation = Operation {
     function: |_, machine| {
         // TODO: minus one?
         let program_counter = machine.stack_pull_pair();
-        machine.program_counter = program_counter;
+        machine.cpu.program_counter = program_counter;
     },
 };
 
@@ -972,14 +994,14 @@ const SBC: Operation = Operation {
     function: |addressing_mode, machine| {
         // TODO: definitely wrong
         let address = addressing_mode.calculate_address(machine);
-        let addend = machine.fetch_byte(address);
-        let carry_in = !machine.get_flag(Machine::CARRY_FLAG);
-        let (result, carry_out) = carrying_sub(machine.accumulator, addend, carry_in);
-        let overflows = carrying_sub_overflows(machine.accumulator, addend, carry_in);
-        machine.accumulator = result;
+        let addend = machine.read_byte(address);
+        let carry_in = !machine.get_flag(CARRY_FLAG);
+        let (result, carry_out) = carrying_sub(machine.cpu.accumulator, addend, carry_in);
+        let overflows = carrying_sub_overflows(machine.cpu.accumulator, addend, carry_in);
+        machine.cpu.accumulator = result;
 
-        machine.set_flag(Machine::CARRY_FLAG, carry_out);
-        machine.set_flag(Machine::OVERFLOW_FLAG, overflows);
+        machine.set_flag(CARRY_FLAG, carry_out);
+        machine.set_flag(OVERFLOW_FLAG, overflows);
         machine.set_result_flags(result);
     },
 };
@@ -989,7 +1011,7 @@ const SBC: Operation = Operation {
 const SEC: Operation = Operation {
     mnemonic: "SEC",
     function: |_, machine| {
-        machine.set_flag(Machine::CARRY_FLAG, true);
+        machine.set_flag(CARRY_FLAG, true);
     },
 };
 
@@ -999,7 +1021,7 @@ const SED: Operation = Operation {
     mnemonic: "SED",
     function: |_, machine| {
         // NOTE: BCD mode is disabled in the Ricoh 2A03
-        machine.set_flag(Machine::DECIMAL_FLAG, true);
+        machine.set_flag(DECIMAL_FLAG, true);
     },
 };
 
@@ -1008,7 +1030,7 @@ const SED: Operation = Operation {
 const SEI: Operation = Operation {
     mnemonic: "SEI",
     function: |_, machine| {
-        machine.set_flag(Machine::INTERRUPT_DISABLE_FLAG, true);
+        machine.set_flag(INTERRUPT_DISABLE_FLAG, true);
     },
 };
 
@@ -1018,7 +1040,7 @@ const STA: Operation = Operation {
     mnemonic: "STA",
     function: |addressing_mode, machine| {
     let address = addressing_mode.calculate_address(machine);
-        machine.store_byte(address, machine.accumulator);
+        machine.write_byte(address, machine.cpu.accumulator);
     },
 };
 
@@ -1028,7 +1050,7 @@ const STX: Operation = Operation {
     mnemonic: "STX",
     function: |addressing_mode, machine| {
     let address = addressing_mode.calculate_address(machine);
-        machine.store_byte(address, machine.register_x);
+        machine.write_byte(address, machine.cpu.register_x);
     },
 };
 
@@ -1038,7 +1060,7 @@ const STY: Operation = Operation {
     mnemonic: "STY",
     function: |addressing_mode, machine| {
     let address = addressing_mode.calculate_address(machine);
-        machine.store_byte(address, machine.register_y);
+        machine.write_byte(address, machine.cpu.register_y);
     },
 };
 
@@ -1047,9 +1069,9 @@ const STY: Operation = Operation {
 const TAX: Operation = Operation {
     mnemonic: "TAX",
     function: |_, machine| {
-        machine.register_x = machine.accumulator;
+        machine.cpu.register_x = machine.cpu.accumulator;
 
-        machine.set_result_flags(machine.register_x);
+        machine.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -1058,9 +1080,9 @@ const TAX: Operation = Operation {
 const TAY: Operation = Operation {
     mnemonic: "TAY",
     function: |_, machine| {
-        machine.register_y = machine.accumulator;
+        machine.cpu.register_y = machine.cpu.accumulator;
 
-        machine.set_result_flags(machine.register_y);
+        machine.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -1069,9 +1091,9 @@ const TAY: Operation = Operation {
 const TSX: Operation = Operation {
     mnemonic: "TSX",
     function: |_, machine| {
-        machine.register_x = machine.stack_pointer;
+        machine.cpu.register_x = machine.cpu.stack_pointer;
 
-        machine.set_result_flags(machine.register_x);
+        machine.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -1080,9 +1102,9 @@ const TSX: Operation = Operation {
 const TXA: Operation = Operation {
     mnemonic: "TXA",
     function: |_, machine| {
-        machine.accumulator = machine.register_x;
+        machine.cpu.accumulator = machine.cpu.register_x;
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -1091,7 +1113,7 @@ const TXA: Operation = Operation {
 const TXS: Operation = Operation {
     mnemonic: "TXS",
     function: |_, machine| {
-        machine.stack_pointer = machine.register_x;
+        machine.cpu.stack_pointer = machine.cpu.register_x;
     },
 };
 
@@ -1100,8 +1122,8 @@ const TXS: Operation = Operation {
 const TYA: Operation = Operation {
     mnemonic: "TYA",
     function: |_, machine| {
-        machine.accumulator = machine.register_y;
+        machine.cpu.accumulator = machine.cpu.register_y;
 
-        machine.set_result_flags(machine.accumulator);
+        machine.set_result_flags(machine.cpu.accumulator);
     },
 };

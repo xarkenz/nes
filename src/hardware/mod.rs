@@ -1,138 +1,124 @@
 use instructions::*;
+use ppu::*;
+use cpu::*;
+use crate::loader::Cartridge;
 
 pub mod instructions;
+pub mod ppu;
+pub mod cpu;
+
+pub const OPEN_BUS: u8 = 0xAA; // Can be any byte value
+pub const STACK_PAGE: u16 = 0x0100;
+pub const NMI_VECTOR: u16 = 0xFFFA;
+pub const RESET_VECTOR: u16 = 0xFFFC;
+pub const IRQ_VECTOR: u16 = 0xFFFE;
 
 pub struct Machine {
-    pub debug: bool,
-    pub program_counter: u16,
-    pub accumulator: u8,
-    pub register_x: u8,
-    pub register_y: u8,
-    pub stack_pointer: u8,
-    status_flags: [bool; Machine::STATUS_FLAG_COUNT],
-    internal_ram: [u8; 0x0800], // $0000-$07FF, ..., $1800-$1FFF (mirrored)
-    ppu_registers: [u8; 0x0008], // $2000-$2007, ..., $3FF8-$3FFF (mirrored)
-    main_memory: [u8; 0xC000], // $4000-$FFFF
+    pub cartridge_slot: Option<Cartridge>,
+    pub cpu: CentralProcessingUnit,
+    pub ppu: PictureProcessingUnit,
+    internal_ram: Box<[u8; 0x0800]>,
 }
 
 impl Machine {
-    pub const STATUS_FLAG_COUNT: usize = u8::BITS as usize;
-    pub const CARRY_FLAG: usize = 0;
-    pub const ZERO_FLAG: usize = 1;
-    pub const INTERRUPT_DISABLE_FLAG: usize = 2;
-    pub const DECIMAL_FLAG: usize = 3; // NOTE: BCD mode is disabled in the Ricoh 2A03
-    pub const BREAK_FLAG: usize = 4;
-    pub const OVERFLOW_FLAG: usize = 5;
-    pub const NEGATIVE_FLAG: usize = 6;
-    pub const RESET_HANDLER_ADDRESS: u16 = 0xFFFC;
-    pub const IRQ_ADDRESS: u16 = 0xFFFE;
-    pub const STACK_PAGE: u16 = 0x0100;
-
     pub fn new() -> Self {
         Self {
-            debug: false,
-            program_counter: 0,
-            accumulator: 0,
-            register_x: 0,
-            register_y: 0,
-            stack_pointer: 0,
-            status_flags: [false; Machine::STATUS_FLAG_COUNT],
-            internal_ram: [0; 0x0800],
-            ppu_registers: [0; 0x0008],
-            main_memory: [0; 0xC000],
+            cartridge_slot: None,
+            cpu: CentralProcessingUnit::new(),
+            ppu: PictureProcessingUnit::new(),
+            internal_ram: Box::new([0; 0x0800]),
         }
     }
 
     pub fn reset(&mut self) {
-        self.program_counter = self.fetch_pair(Self::RESET_HANDLER_ADDRESS);
+        self.cpu.program_counter = self.read_pair(RESET_VECTOR);
     }
 
-    pub fn fetch_byte(&self, address: u16) -> u8 {
+    pub fn read_byte(&mut self, address: u16) -> u8 {
         match address {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize]
             }
-            0x2000 ..= 0x3FFF => {
-                self.ppu_registers[(address & 0x0007) as usize]
+            0x2000 ..= 0x3FFF => match address & 0x0007 {
+                PPU_STATUS => self.ppu.read_status(),
+                PPU_OAM_DATA => self.ppu.read_oam_data(),
+                PPU_VRAM_DATA => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+                    self.ppu.read_vram_data(cartridge)
+                }),
+                _ => OPEN_BUS
             }
-            _ => {
-                self.main_memory[(address - 0x4000) as usize]
-            }
+            _ => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+                cartridge.read_cpu_byte(address)
+            })
         }
     }
 
-    pub fn store_byte(&mut self, address: u16, value: u8) {
+    pub fn read_byte_silent(&self, address: u16) -> u8 {
+        match address {
+            0x0000 ..= 0x1FFF => {
+                self.internal_ram[(address & 0x07FF) as usize]
+            }
+            _ => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+                cartridge.read_cpu_byte(address)
+            })
+        }
+    }
+
+    pub fn write_byte(&mut self, address: u16, value: u8) {
         match address {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize] = value;
             }
-            0x2000 ..= 0x3FFF => {
-                self.ppu_registers[(address & 0x0007) as usize] = value;
+            0x2000 ..= 0x3FFF => match address & 0x0007 {
+                PPU_CONTROL => self.ppu.write_control(value),
+                PPU_MASK => self.ppu.write_mask(value),
+                PPU_OAM_ADDRESS => self.ppu.write_oam_address(value),
+                PPU_OAM_DATA => self.ppu.write_oam_data(value),
+                PPU_SCROLL => self.ppu.write_scroll(value),
+                PPU_VRAM_ADDRESS => self.ppu.write_vram_address(value),
+                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge_slot {
+                    self.ppu.write_vram_data(value, cartridge);
+                },
+                _ => {}
             }
-            _ => {
-                self.main_memory[(address - 0x4000) as usize] = value;
+            OAM_DMA_REGISTER => {
+                self.cpu.start_oam_dma(value);
+            }
+            _ => if let Some(cartridge) = &mut self.cartridge_slot {
+                cartridge.write_cpu_byte(address, value);
             }
         }
     }
 
-    pub fn fetch_pair(&self, address: u16) -> u16 {
-        let low = self.fetch_byte(address) as u16;
-        let high = self.fetch_byte(address.wrapping_add(1)) as u16;
+    pub fn read_pair(&mut self, address: u16) -> u16 {
+        let low = self.read_byte(address) as u16;
+        let high = self.read_byte(address.wrapping_add(1)) as u16;
         (high << 8) | low
     }
 
-    pub fn store_pair(&mut self, address: u16, value: u16) {
+    pub fn read_pair_silent(&self, address: u16) -> u16 {
+        let low = self.read_byte_silent(address) as u16;
+        let high = self.read_byte_silent(address.wrapping_add(1)) as u16;
+        (high << 8) | low
+    }
+
+    pub fn write_pair(&mut self, address: u16, value: u16) {
         let low = (value & 0xFF) as u8;
         let high = (value >> 8) as u8;
-        self.store_byte(address, low);
-        self.store_byte(address.wrapping_add(1), high);
-    }
-
-    pub fn load_memory_bank(&mut self, start_address: u16, bank: &[u8]) {
-        if start_address < 0x4000 || start_address as usize + bank.len() > 0x10000 {
-            panic!("invalid memory bank start address: ${start_address:04X}");
-        }
-        let start_index = (start_address - 0x4000) as usize;
-        self.main_memory[start_index..(start_index + bank.len())].copy_from_slice(bank);
-    }
-
-    pub fn get_flag(&self, flag: usize) -> bool {
-        self.status_flags[flag]
-    }
-
-    pub fn set_flag(&mut self, flag: usize, value: bool) {
-        self.status_flags[flag] = value;
-    }
-
-    pub fn get_status_byte(&self) -> u8 {
-        let mut status = 0;
-        for flag in self.status_flags {
-            status <<= 1;
-            status |= flag as u8;
-        }
-        status
-    }
-
-    pub fn set_status_byte(&mut self, mut status: u8) {
-        for flag in self.status_flags.iter_mut() {
-            *flag = (status & 1) != 0;
-            status >>= 1;
-        }
-    }
-
-    pub fn set_result_flags(&mut self, result: u8) {
-        self.set_flag(Self::ZERO_FLAG, result == 0);
-        self.set_flag(Self::NEGATIVE_FLAG, (result & 0x80) != 0);
+        self.write_byte(address, low);
+        self.write_byte(address.wrapping_add(1), high);
     }
 
     pub fn stack_push_byte(&mut self, value: u8) {
-        self.store_byte(Self::STACK_PAGE | self.stack_pointer as u16, value);
-        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+        let address = STACK_PAGE | self.cpu.stack_pointer as u16;
+        self.write_byte(address, value);
+        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_sub(1);
     }
 
     pub fn stack_pull_byte(&mut self) -> u8 {
-        self.stack_pointer = self.stack_pointer.wrapping_add(1);
-        self.fetch_byte(Self::STACK_PAGE | self.stack_pointer as u16)
+        self.cpu.stack_pointer = self.cpu.stack_pointer.wrapping_add(1);
+        let address = STACK_PAGE | self.cpu.stack_pointer as u16;
+        self.read_byte(address)
     }
 
     pub fn stack_push_pair(&mut self, value: u16) {
@@ -147,32 +133,8 @@ impl Machine {
     }
 
     pub fn execute_instruction(&mut self) {
-        let opcode = self.fetch_byte(self.program_counter);
+        let opcode = self.fetch_byte(self.cpu.program_counter);
         let instruction = Instruction::decode(opcode);
-        if self.debug {
-            println!("Opcode: ${opcode:02X}");
-            println!("Disassembly: {}", instruction.disassemble(self, self.program_counter));
-        }
         instruction.execute(self);
-        if self.debug {
-            self.print_cpu_state();
-        }
-    }
-
-    pub fn print_cpu_state(&self) {
-        println!("CPU state:");
-        println!("    PC:     ${:04X}", self.program_counter);
-        println!("    SP:     $01{:02X}", self.stack_pointer);
-        println!("    A:      ${:02X}", self.accumulator);
-        println!("    X:      ${:02X}", self.register_x);
-        println!("    Y:      ${:02X}", self.register_y);
-        println!("    Status:  CZIDBVN-");
-        println!("            %{:08b}", self.get_status_byte());
-    }
-}
-
-impl Default for Machine {
-    fn default() -> Self {
-        Self::new()
     }
 }

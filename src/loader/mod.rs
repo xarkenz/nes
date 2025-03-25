@@ -1,16 +1,17 @@
 use std::io::Read;
-use crate::hardware::Machine;
 
 pub const PRG_BANK_SIZE: usize = 0x4000;
 pub const CHR_BANK_SIZE: usize = 0x2000;
+pub const NAMETABLE_SIZE: usize = 0x0400;
 
 pub struct Cartridge {
     pub mapper_number: u8,
-    pub nametable_arrangement: bool,
+    pub nametable_arrangement: bool, // false: horizontal mirroring, true: vertical mirroring
     pub uses_alt_nametable_layout: bool,
     pub has_battery: bool,
-    pub prg_rom: Vec<[u8; PRG_BANK_SIZE]>,
-    pub chr_rom: Vec<[u8; CHR_BANK_SIZE]>,
+    pub prg_rom: Vec<Box<[u8; PRG_BANK_SIZE]>>,
+    pub chr_rom: Vec<Box<[u8; CHR_BANK_SIZE]>>,
+    nametables: [Box<[u8; NAMETABLE_SIZE]>; 2],
 }
 
 impl Cartridge {
@@ -28,30 +29,79 @@ impl Cartridge {
             return Err("ROM size limit exceeded".to_string());
         }
 
+        let mapper_number = header[6] >> 4;
+        if mapper_number != 0 {
+            return Err("Unsupported mapper".to_string());
+        }
+
         let mut cartridge = Cartridge {
-            mapper_number: header[6] >> 4,
+            mapper_number,
             nametable_arrangement: header[6] & 0x01 != 0,
             uses_alt_nametable_layout: header[6] & 0x08 != 0,
             has_battery: header[6] & 0x02 != 0,
             prg_rom: Vec::with_capacity(prg_rom_banks),
             chr_rom: Vec::with_capacity(chr_rom_banks),
+            nametables: [Box::new([0; NAMETABLE_SIZE]), Box::new([0; NAMETABLE_SIZE])],
         };
 
-        for bank in 0..prg_rom_banks {
-            cartridge.prg_rom.push([0; PRG_BANK_SIZE]);
+        for bank in 0 .. prg_rom_banks {
+            cartridge.prg_rom.push(Box::new([0; PRG_BANK_SIZE]));
             reader.read_exact(&mut cartridge.prg_rom[bank]).map_err(|err| err.to_string())?;
         }
-        for bank in 0..chr_rom_banks {
-            cartridge.chr_rom.push([0; CHR_BANK_SIZE]);
+        for bank in 0 .. chr_rom_banks {
+            cartridge.chr_rom.push(Box::new([0; CHR_BANK_SIZE]));
             reader.read_exact(&mut cartridge.chr_rom[bank]).map_err(|err| err.to_string())?;
         }
 
         Ok(cartridge)
     }
 
-    pub fn load_into(&self, machine: &mut Machine) {
-        // TODO: extremely temporary hardcode
-        machine.load_memory_bank(0x8000, &self.prg_rom[0]);
-        machine.load_memory_bank(0xC000, &self.prg_rom[1]);
+    pub fn read_cpu_byte(&self, address: u16) -> u8 {
+        // Temporary, should be deferred to a polymorphic mapper object
+        match address {
+            0x8000 ..= 0xBFFF => {
+                self.prg_rom[0][(address & 0x3FFF) as usize]
+            }
+            0xC000 ..= 0xFFFF => {
+                self.prg_rom[1][(address & 0x3FFF) as usize]
+            }
+            _ => crate::hardware::OPEN_BUS
+        }
+    }
+
+    pub fn write_cpu_byte(&mut self, _address: u16, _value: u8) {
+        // Temporary, should be deferred to a polymorphic mapper object
+        // For mapper 0, this is just a no-op since there's no PRG-RAM
+    }
+
+    pub fn read_ppu_byte(&self, address: u16) -> u8 {
+        // Temporary, should be deferred to a polymorphic mapper object
+        match address & 0x3FFF {
+            0x0000 ..= 0x1FFF => {
+                self.chr_rom[0][address as usize]
+            }
+            _ => {
+                let index = self.get_nametable_index(address);
+                self.nametables[index][(address & 0x03FF) as usize]
+            }
+        }
+    }
+
+    pub fn write_ppu_byte(&mut self, address: u16, value: u8) {
+        // Temporary, should be deferred to a polymorphic mapper object
+        match address & 0x3FFF {
+            0x0000 ..= 0x1FFF => {
+                // For mapper 0, this is just a no-op since there's no CHR-RAM
+            }
+            _ => {
+                let index = self.get_nametable_index(address);
+                self.nametables[index][(address & 0x03FF) as usize] = value;
+            }
+        }
+    }
+
+    fn get_nametable_index(&self, address: u16) -> usize {
+        let bit = 10 + self.nametable_arrangement as u16;
+        ((address >> bit) & 1) as usize
     }
 }

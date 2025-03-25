@@ -1,4 +1,5 @@
 use std::io::Write;
+use minifb::{Window, WindowOptions};
 use hardware::*;
 use loader::*;
 
@@ -48,8 +49,7 @@ pub fn parse_int<T: FromStrRadix>(string: &str) -> Result<T, std::num::ParseIntE
 }
 
 pub fn main() {
-    let mut machine = Box::new(Machine::new());
-    machine.debug = true;
+    let mut machine = Machine::new();
     let mut user_input = String::new();
 
     loop {
@@ -64,7 +64,10 @@ pub fn main() {
             None => (user_input.trim(), ""),
         };
 
-        if command.eq_ignore_ascii_case("Quit") {
+        if command.is_empty() {
+            continue;
+        }
+        else if command.eq_ignore_ascii_case("Quit") {
             break;
         }
         else if command.eq_ignore_ascii_case("Load") {
@@ -92,10 +95,14 @@ pub fn main() {
             println!("Successfully reset.");
         }
         else if command.eq_ignore_ascii_case("Step") {
+            let opcode = machine.read_byte(self.program_counter);
+            let instruction = instructions::Instruction::decode(opcode);
+            println!("Opcode: ${opcode:02X}");
+            println!("Disassembly: {}", instruction.disassemble(&machine, self.program_counter));
             machine.execute_instruction();
         }
         else if command.eq_ignore_ascii_case("State") {
-            machine.print_cpu_state();
+            machine.cpu.debug_print_state();
         }
         else if command.eq_ignore_ascii_case("Byte") {
             let address = match parse_int(argument) {
@@ -105,7 +112,7 @@ pub fn main() {
                     continue;
                 }
             };
-            let value = machine.fetch_byte(address);
+            let value = machine.read_byte(address);
             println!("Byte at address ${address:04X}: ${value:02X}");
         }
         else if command.eq_ignore_ascii_case("Pair") {
@@ -116,7 +123,7 @@ pub fn main() {
                     continue;
                 }
             };
-            let value = machine.fetch_pair(address);
+            let value = machine.read_pair(address);
             println!("Pair at address ${address:04X}: ${value:04X}");
         }
         else if command.eq_ignore_ascii_case("SetByte") {
@@ -138,8 +145,8 @@ pub fn main() {
                     continue;
                 }
             };
-            let old_value = machine.fetch_byte(address);
-            machine.store_byte(address, value);
+            let old_value = machine.read_byte(address);
+            machine.write_byte(address, value);
             println!("Byte at address ${address:04X}: ${old_value:02X} -> ${value:02X}");
         }
         else if command.eq_ignore_ascii_case("SetPair") {
@@ -161,9 +168,21 @@ pub fn main() {
                     continue;
                 }
             };
-            let old_value = machine.fetch_pair(address);
-            machine.store_pair(address, value);
+            let old_value = machine.read_pair(address);
+            machine.write_pair(address, value);
             println!("Pair at address ${address:04X}: ${old_value:04X} -> ${value:04X}");
+        }
+        else if command.eq_ignore_ascii_case("Play") {
+            let mut buffer = vec![0_u32; 256 * 240];
+            let mut window = Window::new("NES", 256, 240, WindowOptions::default()).unwrap();
+            window.set_target_fps(60);
+            while window.is_open() {
+                for pixel in &mut buffer {
+                    let [_, r, g, b] = pixel.to_be_bytes();
+                    *pixel = u32::from_be_bytes([0, r.wrapping_add(5), g.wrapping_add(3), b.wrapping_add(2)]);
+                }
+                window.update_with_buffer(&buffer, 256, 240).unwrap();
+            }
         }
         else {
             println!("Error: unknown command: {}", command);
