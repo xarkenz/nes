@@ -1,5 +1,5 @@
 use std::io::Write;
-use minifb::{Window, WindowOptions};
+use minifb::{Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
 
@@ -99,7 +99,7 @@ pub fn main() {
             let instruction = instructions::Instruction::decode(opcode);
             println!("Opcode: ${opcode:02X}");
             println!("Disassembly: {}", instruction.disassemble(&machine, machine.cpu.program_counter));
-            machine.execute_instruction();
+            // machine.execute_instruction();
         }
         else if command.eq_ignore_ascii_case("State") {
             machine.cpu.debug_print_state();
@@ -145,7 +145,7 @@ pub fn main() {
                     continue;
                 }
             };
-            let old_value = machine.read_byte(address);
+            let old_value = machine.read_byte_silent(address);
             machine.write_byte(address, value);
             println!("Byte at address ${address:04X}: ${old_value:02X} -> ${value:02X}");
         }
@@ -168,18 +168,72 @@ pub fn main() {
                     continue;
                 }
             };
-            let old_value = machine.read_pair(address);
+            let old_value = machine.read_pair_silent(address);
             machine.write_pair(address, value);
             println!("Pair at address ${address:04X}: ${old_value:04X} -> ${value:04X}");
         }
+        else if command.eq_ignore_ascii_case("Dis") {
+            let address = match parse_int(argument) {
+                Ok(address) => address,
+                Err(error) => {
+                    eprintln!("Error: invalid address: {error}");
+                    continue;
+                }
+            };
+            let opcode = machine.read_byte(address);
+            let instruction = instructions::Instruction::decode(opcode);
+            let disassembly = instruction.disassemble(&machine, address);
+            match instruction.size_bytes() {
+                2 => {
+                    let op0 = machine.read_byte(address.wrapping_add(1));
+                    println!("${address:04X}: {opcode:02X} {op0:02X}    ; {disassembly}");
+                }
+                3 => {
+                    let op0 = machine.read_byte(address.wrapping_add(1));
+                    let op1 = machine.read_byte(address.wrapping_add(2));
+                    println!("${address:04X}: {opcode:02X} {op0:02X} {op1:02X} ; {disassembly}");
+                }
+                _ => {
+                    println!("${address:04X}: {opcode:02X}       ; {disassembly}");
+                }
+            }
+        }
+        else if command.eq_ignore_ascii_case("Palette") {
+            print!("BG: ");
+            for index in 0..16 {
+                if index & 0b11 == 0 {
+                    print!("| ");
+                }
+                print!("{:02X} ", machine.ppu.palette_ram[index]);
+            }
+            println!();
+            print!("SP: ");
+            for index in 16..32 {
+                if index & 0b11 == 0 {
+                    print!("| ");
+                }
+                print!("{:02X} ", machine.ppu.palette_ram[index]);
+            }
+            println!();
+        }
         else if command.eq_ignore_ascii_case("Play") {
             let mut buffer = vec![0_u32; 256 * 240];
-            let mut window = Window::new("NES", 256, 240, WindowOptions::default()).unwrap();
+            let mut window_options = WindowOptions::default();
+            window_options.scale = Scale::X4;
+            let mut window = Window::new("NES", 256, 240, window_options).unwrap();
             window.set_target_fps(60);
             while window.is_open() {
-                for pixel in &mut buffer {
-                    let [_, r, g, b] = pixel.to_be_bytes();
-                    *pixel = u32::from_be_bytes([0, r.wrapping_add(5), g.wrapping_add(3), b.wrapping_add(2)]);
+                machine.tick();
+                while !machine.ppu.is_at_top_left() {
+                    machine.tick();
+                }
+                for (pos, sliver) in buffer.chunks_exact_mut(8).enumerate() {
+                    let base_nametable_address = 0x2000;
+                    let x = ((pos as u8) & 0b11111) << 3;
+                    let y = (pos >> 5) as u8;
+                    let computed_sliver = machine.ppu.get_tile_sliver(base_nametable_address, x, y, &machine.cartridge_slot.as_ref().unwrap())
+                        .map(|index| machine.ppu.get_color_rgb(index));
+                    sliver.copy_from_slice(&computed_sliver);
                 }
                 window.update_with_buffer(&buffer, 256, 240).unwrap();
             }

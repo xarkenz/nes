@@ -1,3 +1,5 @@
+use crate::hardware::instructions::Instruction;
+
 pub const CARRY_FLAG: usize = 0;
 pub const ZERO_FLAG: usize = 1;
 pub const INTERRUPT_DISABLE_FLAG: usize = 2;
@@ -6,6 +8,7 @@ pub const BREAK_FLAG: usize = 4;
 pub const OVERFLOW_FLAG: usize = 5;
 pub const NEGATIVE_FLAG: usize = 6;
 pub const OAM_DMA_REGISTER: u16 = 0x4014;
+pub const TICKS_PER_CPU_CYCLE: u16 = 3;
 
 pub struct CentralProcessingUnit {
     pub program_counter: u16,
@@ -14,9 +17,10 @@ pub struct CentralProcessingUnit {
     pub register_y: u8,
     pub stack_pointer: u8,
     pub status_byte: u8,
-    delay_cycles: u16,
-    oam_dma_address: u16,
-    oam_dma_active: bool,
+    pub oam_dma_address: u16,
+    pub oam_dma_active: bool,
+    pub ticks_available: u16,
+    pub pending_instruction: Option<&'static Instruction>,
 }
 
 impl CentralProcessingUnit {
@@ -28,9 +32,10 @@ impl CentralProcessingUnit {
             register_y: 0,
             stack_pointer: 0,
             status_byte: 0,
-            delay_cycles: 0,
             oam_dma_address: 0,
             oam_dma_active: false,
+            ticks_available: 0,
+            pending_instruction: None,
         }
     }
 
@@ -53,6 +58,10 @@ impl CentralProcessingUnit {
         self.oam_dma_address = (page as u16) << 8;
     }
 
+    pub fn tick(&mut self) {
+        self.ticks_available += 1;
+    }
+
     pub fn debug_print_state(&self) {
         println!("CPU state:");
         println!("    PC:     ${:04X}", self.program_counter);
@@ -61,6 +70,6 @@ impl CentralProcessingUnit {
         println!("    X:      ${:02X}", self.register_x);
         println!("    Y:      ${:02X}", self.register_y);
         println!("    Status:  CZIDBVN-");
-        println!("            %{:08b}", self.get_status_byte());
+        println!("            %{:08b}", self.status_byte);
     }
 }

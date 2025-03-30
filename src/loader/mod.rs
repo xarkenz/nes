@@ -46,11 +46,11 @@ impl Cartridge {
 
         for bank in 0 .. prg_rom_banks {
             cartridge.prg_rom.push(Box::new([0; PRG_BANK_SIZE]));
-            reader.read_exact(&mut cartridge.prg_rom[bank]).map_err(|err| err.to_string())?;
+            reader.read_exact(cartridge.prg_rom[bank].as_mut_slice()).map_err(|err| err.to_string())?;
         }
         for bank in 0 .. chr_rom_banks {
             cartridge.chr_rom.push(Box::new([0; CHR_BANK_SIZE]));
-            reader.read_exact(&mut cartridge.chr_rom[bank]).map_err(|err| err.to_string())?;
+            reader.read_exact(cartridge.chr_rom[bank].as_mut_slice()).map_err(|err| err.to_string())?;
         }
 
         Ok(cartridge)

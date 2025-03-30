@@ -122,19 +122,42 @@ impl Machine {
     }
 
     pub fn stack_push_pair(&mut self, value: u16) {
-        self.stack_push_byte((value & 0x00FF) as u8);
         self.stack_push_byte((value >> 8) as u8);
+        self.stack_push_byte((value & 0x00FF) as u8);
     }
 
     pub fn stack_pull_pair(&mut self) -> u16 {
-        let high = self.stack_pull_byte();
         let low = self.stack_pull_byte();
+        let high = self.stack_pull_byte();
         (high as u16) << 8 | low as u16
     }
 
-    pub fn execute_instruction(&mut self) {
-        let opcode = self.fetch_byte(self.cpu.program_counter);
-        let instruction = Instruction::decode(opcode);
-        instruction.execute(self);
+    pub fn handle_nmi(&mut self) {
+        self.cpu.pending_instruction = None;
+        self.stack_push_pair(self.cpu.program_counter);
+        self.stack_push_byte(self.cpu.status_byte);
+        self.cpu.program_counter = self.read_pair(NMI_VECTOR);
+    }
+
+    pub fn tick(&mut self) {
+        self.ppu.tick();
+        
+        self.cpu.tick();
+        if let Some(instruction) = self.cpu.pending_instruction {
+            let ticks_needed = instruction.cycles_needed() * TICKS_PER_CPU_CYCLE;
+            if ticks_needed <= self.cpu.ticks_available {
+                self.cpu.ticks_available -= ticks_needed;
+                self.cpu.pending_instruction = None;
+                instruction.execute(self);
+            }
+        }
+        else {
+            let opcode = self.read_byte(self.cpu.program_counter);
+            self.cpu.pending_instruction = Some(Instruction::decode(opcode));
+        }
+        
+        if self.ppu.check_vblank_nmi() {
+            self.handle_nmi();
+        }
     }
 }

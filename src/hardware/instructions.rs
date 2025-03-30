@@ -82,13 +82,16 @@ impl AddressingMode {
             }
             Indirect => {
                 // TODO: Does NES have page boundary bug?
-                machine.read_pair(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)))
+                let address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
+                machine.read_pair(address)
             }
             IndirectX => {
-                machine.read_pair(machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16)
+                let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16;
+                machine.read_pair(address)
             }
             IndirectY => {
-                machine.read_pair(machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16).wrapping_add(machine.cpu.register_y as u16)
+                let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16;
+                machine.read_pair(address).wrapping_add(machine.cpu.register_y as u16)
             }
             _ => panic!("cannot calculate address for addressing mode")
         }
@@ -99,11 +102,11 @@ pub struct Instruction {
     opcode: u8,
     operation: Operation,
     addressing_mode: AddressingMode,
-    cycles_needed: i32,
+    cycles_needed: u16,
 }
 
 impl Instruction {
-    const fn new(opcode: u8, operation: Operation, addressing_mode: AddressingMode, cycles_needed: i32) -> Self {
+    const fn new(opcode: u8, operation: Operation, addressing_mode: AddressingMode, cycles_needed: u16) -> Self {
         Self {
             opcode,
             operation,
@@ -128,7 +131,7 @@ impl Instruction {
         self.addressing_mode.get_instruction_size()
     }
 
-    pub fn cycles_needed(&self) -> i32 {
+    pub fn cycles_needed(&self) -> u16 {
         self.cycles_needed
     }
 
@@ -137,12 +140,14 @@ impl Instruction {
     }
 
     pub fn execute(&self, machine: &mut Machine) {
+        // println!("${:04X}: {}", machine.cpu.program_counter, self.disassemble(&machine, machine.cpu.program_counter));
         machine.cpu.program_counter = machine.cpu.program_counter.wrapping_add(self.size_bytes());
         (self.operation.function)(self.addressing_mode, machine);
     }
 }
 
 // Cycle counts are from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
+// TODO: some of the indexed ones add 1 cycle if crossing a page boundary, but not all
 const INSTRUCTIONS: [Instruction; 0x100] = [
     Instruction::new(0x00, BRK, Implicit, 7),
     Instruction::new(0x01, ORA, IndirectX, 6),
@@ -438,6 +443,7 @@ const UNMAPPED: Operation = Operation {
     mnemonic: "???",
     function: |_, _| {
         // Uh oh
+        panic!("yeah no can do sorry");
     },
 };
 
@@ -448,14 +454,14 @@ const ADC: Operation = Operation {
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
         let addend = machine.read_byte(address);
-        let carry_in = machine.get_flag(CARRY_FLAG);
+        let carry_in = machine.cpu.get_flag(CARRY_FLAG);
         let (result, carry_out) = carrying_add(machine.cpu.accumulator, addend, carry_in);
         let overflows = carrying_add_overflows(machine.cpu.accumulator, addend, carry_in);
         machine.cpu.accumulator = result;
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_flag(OVERFLOW_FLAG, overflows);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_flag(OVERFLOW_FLAG, overflows);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -467,7 +473,7 @@ const AND: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator &= machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -491,8 +497,8 @@ const ASL: Operation = Operation {
             machine.write_byte(address, result);
         }
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -501,7 +507,7 @@ const ASL: Operation = Operation {
 const BCC: Operation = Operation {
     mnemonic: "BCC",
     function: |_, machine| {
-        if !machine.get_flag(CARRY_FLAG) {
+        if !machine.cpu.get_flag(CARRY_FLAG) {
             process_branch(machine);
         }
     },
@@ -512,7 +518,7 @@ const BCC: Operation = Operation {
 const BCS: Operation = Operation {
     mnemonic: "BCS",
     function: |_, machine| {
-        if machine.get_flag(CARRY_FLAG) {
+        if machine.cpu.get_flag(CARRY_FLAG) {
             process_branch(machine);
         }
     },
@@ -523,7 +529,7 @@ const BCS: Operation = Operation {
 const BEQ: Operation = Operation {
     mnemonic: "BEQ",
     function: |_, machine| {
-        if machine.get_flag(ZERO_FLAG) {
+        if machine.cpu.get_flag(ZERO_FLAG) {
             process_branch(machine);
         }
     },
@@ -537,8 +543,8 @@ const BIT: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         let result = machine.read_byte(address) & machine.cpu.accumulator;
 
-        machine.set_flag(OVERFLOW_FLAG, (result & 0x40) != 0);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(OVERFLOW_FLAG, (result & 0x40) != 0);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -547,7 +553,7 @@ const BIT: Operation = Operation {
 const BMI: Operation = Operation {
     mnemonic: "BMI",
     function: |_, machine| {
-        if machine.get_flag(NEGATIVE_FLAG) {
+        if machine.cpu.get_flag(NEGATIVE_FLAG) {
             process_branch(machine);
         }
     },
@@ -558,7 +564,7 @@ const BMI: Operation = Operation {
 const BNE: Operation = Operation {
     mnemonic: "BNE",
     function: |_, machine| {
-        if !machine.get_flag(ZERO_FLAG) {
+        if !machine.cpu.get_flag(ZERO_FLAG) {
             process_branch(machine);
         }
     },
@@ -569,7 +575,7 @@ const BNE: Operation = Operation {
 const BPL: Operation = Operation {
     mnemonic: "BPL",
     function: |_, machine| {
-        if !machine.get_flag(NEGATIVE_FLAG) {
+        if !machine.cpu.get_flag(NEGATIVE_FLAG) {
             process_branch(machine);
         }
     },
@@ -581,9 +587,9 @@ const BRK: Operation = Operation {
     mnemonic: "BRK",
     function: |_, machine| {
         machine.stack_push_pair(machine.cpu.program_counter);
-        machine.stack_push_byte(machine.get_status_byte());
+        machine.stack_push_byte(machine.cpu.status_byte);
         machine.cpu.program_counter = machine.read_pair(IRQ_VECTOR);
-        machine.set_flag(BREAK_FLAG, true);
+        machine.cpu.set_flag(BREAK_FLAG, true);
     },
 };
 
@@ -592,7 +598,7 @@ const BRK: Operation = Operation {
 const BVC: Operation = Operation {
     mnemonic: "BVC",
     function: |_, machine| {
-        if !machine.get_flag(OVERFLOW_FLAG) {
+        if !machine.cpu.get_flag(OVERFLOW_FLAG) {
             process_branch(machine);
         }
     },
@@ -603,7 +609,7 @@ const BVC: Operation = Operation {
 const BVS: Operation = Operation {
     mnemonic: "BVS",
     function: |_, machine| {
-        if machine.get_flag(OVERFLOW_FLAG) {
+        if machine.cpu.get_flag(OVERFLOW_FLAG) {
             process_branch(machine);
         }
     },
@@ -614,7 +620,7 @@ const BVS: Operation = Operation {
 const CLC: Operation = Operation {
     mnemonic: "CLC",
     function: |_, machine| {
-        machine.set_flag(CARRY_FLAG, false);
+        machine.cpu.set_flag(CARRY_FLAG, false);
     },
 };
 
@@ -624,7 +630,7 @@ const CLD: Operation = Operation {
     mnemonic: "CLD",
     function: |_, machine| {
         // NOTE: BCD mode is disabled in the Ricoh 2A03
-        machine.set_flag(DECIMAL_FLAG, false);
+        machine.cpu.set_flag(DECIMAL_FLAG, false);
     },
 };
 
@@ -633,7 +639,7 @@ const CLD: Operation = Operation {
 const CLI: Operation = Operation {
     mnemonic: "CLI",
     function: |_, machine| {
-        machine.set_flag(INTERRUPT_DISABLE_FLAG, false);
+        machine.cpu.set_flag(INTERRUPT_DISABLE_FLAG, false);
     },
 };
 
@@ -642,7 +648,7 @@ const CLI: Operation = Operation {
 const CLV: Operation = Operation {
     mnemonic: "CLV",
     function: |_, machine| {
-        machine.set_flag(OVERFLOW_FLAG, false);
+        machine.cpu.set_flag(OVERFLOW_FLAG, false);
     },
 };
 
@@ -655,8 +661,8 @@ const CMP: Operation = Operation {
         let value = machine.read_byte(address);
         let result = machine.cpu.accumulator.wrapping_sub(value);
 
-        machine.set_flag(CARRY_FLAG, machine.cpu.accumulator as i8 >= value as i8);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, machine.cpu.accumulator >= value);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -669,8 +675,8 @@ const CPX: Operation = Operation {
         let value = machine.read_byte(address);
         let result = machine.cpu.register_x.wrapping_sub(value);
 
-        machine.set_flag(CARRY_FLAG, machine.cpu.register_x as i8 >= value as i8);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, machine.cpu.register_x >= value);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -683,8 +689,8 @@ const CPY: Operation = Operation {
         let value = machine.read_byte(address);
         let result = machine.cpu.register_y.wrapping_sub(value);
 
-        machine.set_flag(CARRY_FLAG, machine.cpu.register_y as i8 >= value as i8);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, machine.cpu.register_y >= value);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -697,7 +703,7 @@ const DEC: Operation = Operation {
         let result = machine.read_byte(address).wrapping_sub(1);
         machine.write_byte(address, result);
 
-        machine.set_result_flags(result);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -708,7 +714,7 @@ const DEX: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_x = machine.cpu.register_x.wrapping_sub(1);
 
-        machine.set_result_flags(machine.cpu.register_x);
+        machine.cpu.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -719,7 +725,7 @@ const DEY: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_y = machine.cpu.register_y.wrapping_sub(1);
 
-        machine.set_result_flags(machine.cpu.register_y);
+        machine.cpu.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -731,7 +737,7 @@ const EOR: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator ^= machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -744,7 +750,7 @@ const INC: Operation = Operation {
         let result = machine.read_byte(address).wrapping_add(1);
         machine.write_byte(address, result);
 
-        machine.set_result_flags(result);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -755,7 +761,7 @@ const INX: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_x = machine.cpu.register_x.wrapping_add(1);
 
-        machine.set_result_flags(machine.cpu.register_x);
+        machine.cpu.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -766,7 +772,7 @@ const INY: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_y = machine.cpu.register_y.wrapping_add(1);
 
-        machine.set_result_flags(machine.cpu.register_y);
+        machine.cpu.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -786,7 +792,7 @@ const JSR: Operation = Operation {
     mnemonic: "JSR",
     function: |addressing_mode, machine| {
         let address = addressing_mode.calculate_address(machine);
-        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_pair(machine.cpu.program_counter.wrapping_sub(1));
         machine.cpu.program_counter = address;
     },
 };
@@ -799,7 +805,7 @@ const LDA: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator = machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -811,7 +817,7 @@ const LDX: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.register_x = machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.register_x);
+        machine.cpu.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -823,7 +829,7 @@ const LDY: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.register_y = machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.register_y);
+        machine.cpu.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -847,8 +853,8 @@ const LSR: Operation = Operation {
             machine.write_byte(address, result);
         }
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -869,7 +875,7 @@ const ORA: Operation = Operation {
         let address = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator |= machine.read_byte(address);
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -887,7 +893,7 @@ const PHA: Operation = Operation {
 const PHP: Operation = Operation {
     mnemonic: "PHP",
     function: |_, machine| {
-        machine.stack_push_byte(machine.get_status_byte());
+        machine.stack_push_byte(machine.cpu.status_byte);
     },
 };
 
@@ -898,7 +904,7 @@ const PLA: Operation = Operation {
     function: |_, machine| {
         machine.cpu.accumulator = machine.stack_pull_byte();
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -908,7 +914,7 @@ const PLP: Operation = Operation {
     mnemonic: "PLP",
     function: |_, machine| {
         let status_byte = machine.stack_pull_byte();
-        machine.set_status_byte(status_byte);
+        machine.cpu.status_byte = status_byte;
     },
 };
 
@@ -917,7 +923,7 @@ const PLP: Operation = Operation {
 const ROL: Operation = Operation {
     mnemonic: "ROL",
     function: |addressing_mode, machine| {
-        let carry_in = machine.get_flag(CARRY_FLAG);
+        let carry_in = machine.cpu.get_flag(CARRY_FLAG);
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
@@ -933,8 +939,8 @@ const ROL: Operation = Operation {
             machine.write_byte(address, result);
         }
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -943,7 +949,7 @@ const ROL: Operation = Operation {
 const ROR: Operation = Operation {
     mnemonic: "ROR",
     function: |addressing_mode, machine| {
-        let carry_in = machine.get_flag(CARRY_FLAG);
+        let carry_in = machine.cpu.get_flag(CARRY_FLAG);
         let carry_out;
         let result;
         if let Accumulator = addressing_mode {
@@ -959,8 +965,8 @@ const ROR: Operation = Operation {
             machine.write_byte(address, result);
         }
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -971,7 +977,7 @@ const RTI: Operation = Operation {
     function: |_, machine| {
         let status_byte = machine.stack_pull_byte();
         let program_counter = machine.stack_pull_pair();
-        machine.set_status_byte(status_byte);
+        machine.cpu.status_byte = status_byte;
         machine.cpu.program_counter = program_counter;
     },
 };
@@ -981,8 +987,7 @@ const RTI: Operation = Operation {
 const RTS: Operation = Operation {
     mnemonic: "RTS",
     function: |_, machine| {
-        // TODO: minus one?
-        let program_counter = machine.stack_pull_pair();
+        let program_counter = machine.stack_pull_pair().wrapping_add(1);
         machine.cpu.program_counter = program_counter;
     },
 };
@@ -995,14 +1000,14 @@ const SBC: Operation = Operation {
         // TODO: definitely wrong
         let address = addressing_mode.calculate_address(machine);
         let addend = machine.read_byte(address);
-        let carry_in = !machine.get_flag(CARRY_FLAG);
+        let carry_in = !machine.cpu.get_flag(CARRY_FLAG);
         let (result, carry_out) = carrying_sub(machine.cpu.accumulator, addend, carry_in);
         let overflows = carrying_sub_overflows(machine.cpu.accumulator, addend, carry_in);
         machine.cpu.accumulator = result;
 
-        machine.set_flag(CARRY_FLAG, carry_out);
-        machine.set_flag(OVERFLOW_FLAG, overflows);
-        machine.set_result_flags(result);
+        machine.cpu.set_flag(CARRY_FLAG, carry_out);
+        machine.cpu.set_flag(OVERFLOW_FLAG, overflows);
+        machine.cpu.set_result_flags(result);
     },
 };
 
@@ -1011,7 +1016,7 @@ const SBC: Operation = Operation {
 const SEC: Operation = Operation {
     mnemonic: "SEC",
     function: |_, machine| {
-        machine.set_flag(CARRY_FLAG, true);
+        machine.cpu.set_flag(CARRY_FLAG, true);
     },
 };
 
@@ -1021,7 +1026,7 @@ const SED: Operation = Operation {
     mnemonic: "SED",
     function: |_, machine| {
         // NOTE: BCD mode is disabled in the Ricoh 2A03
-        machine.set_flag(DECIMAL_FLAG, true);
+        machine.cpu.set_flag(DECIMAL_FLAG, true);
     },
 };
 
@@ -1030,7 +1035,7 @@ const SED: Operation = Operation {
 const SEI: Operation = Operation {
     mnemonic: "SEI",
     function: |_, machine| {
-        machine.set_flag(INTERRUPT_DISABLE_FLAG, true);
+        machine.cpu.set_flag(INTERRUPT_DISABLE_FLAG, true);
     },
 };
 
@@ -1071,7 +1076,7 @@ const TAX: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_x = machine.cpu.accumulator;
 
-        machine.set_result_flags(machine.cpu.register_x);
+        machine.cpu.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -1082,7 +1087,7 @@ const TAY: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_y = machine.cpu.accumulator;
 
-        machine.set_result_flags(machine.cpu.register_y);
+        machine.cpu.set_result_flags(machine.cpu.register_y);
     },
 };
 
@@ -1093,7 +1098,7 @@ const TSX: Operation = Operation {
     function: |_, machine| {
         machine.cpu.register_x = machine.cpu.stack_pointer;
 
-        machine.set_result_flags(machine.cpu.register_x);
+        machine.cpu.set_result_flags(machine.cpu.register_x);
     },
 };
 
@@ -1104,7 +1109,7 @@ const TXA: Operation = Operation {
     function: |_, machine| {
         machine.cpu.accumulator = machine.cpu.register_x;
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
 
@@ -1124,6 +1129,6 @@ const TYA: Operation = Operation {
     function: |_, machine| {
         machine.cpu.accumulator = machine.cpu.register_y;
 
-        machine.set_result_flags(machine.cpu.accumulator);
+        machine.cpu.set_result_flags(machine.cpu.accumulator);
     },
 };
