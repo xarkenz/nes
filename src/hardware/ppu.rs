@@ -1,4 +1,4 @@
-use crate::loader::Cartridge;
+use crate::loader::{Cartridge, ColorConverter};
 
 pub const PPU_CONTROL: u16 = 0;
 pub const PPU_MASK: u16 = 1;
@@ -11,17 +11,17 @@ pub const PPU_VRAM_DATA: u16 = 7;
 pub const TICKS_PER_PPU_CYCLE: u16 = 1;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const OAM_SIZE: usize = 0x100;
-// TODO: figure out what the fuck is going on with palettes
-const PPU_COLORS: [u32; 64] = [
-    0x916D00, 0x6D48DA, 0x009191, 0xDADA00, 0x000000, 0xFFB6B6, 0x002491, 0xDA6D00,
-    0xB6B6B6, 0x6D2400, 0x00FF00, 0x00006D, 0xFFDA91, 0xFFFF00, 0x009100, 0xB6FF48,
-    0xFF6DFF, 0x480000, 0x0048FF, 0xFF91FF, 0x000000, 0x484848, 0xB62400, 0xFF9100,
-    0xDAB66D, 0x00B66D, 0x9191FF, 0x249100, 0x91006D, 0x000000, 0x91FF6D, 0x6DB6FF,
-    0xB6006D, 0x006D24, 0x914800, 0x0000DA, 0x9100FF, 0xB600FF, 0x6D6D6D, 0xFF0091,
-    0x004848, 0xDADADA, 0x006DDA, 0x004800, 0x242424, 0xFFFF6D, 0x919191, 0xFF00FF,
-    0xFFB6FF, 0xFFFFFF, 0x6D4800, 0xFF0000, 0xFFDA00, 0x48FFDA, 0xFFFFFF, 0x91DAFF,
-    0x000000, 0xFFB600, 0xDA6DFF, 0xB6DAFF, 0x6DDA00, 0xDAB6FF, 0x00FFFF, 0x244800,
-];
+// const PPU_COLORS: [u32; PPU_COLOR_COUNT] = [
+//     0x916D00, 0x6D48DA, 0x009191, 0xDADA00, 0x000000, 0xFFB6B6, 0x002491, 0xDA6D00,
+//     0xB6B6B6, 0x6D2400, 0x00FF00, 0x00006D, 0xFFDA91, 0xFFFF00, 0x009100, 0xB6FF48,
+//     0xFF6DFF, 0x480000, 0x0048FF, 0xFF91FF, 0x000000, 0x484848, 0xB62400, 0xFF9100,
+//     0xDAB66D, 0x00B66D, 0x9191FF, 0x249100, 0x91006D, 0x000000, 0x91FF6D, 0x6DB6FF,
+//     0xB6006D, 0x006D24, 0x914800, 0x0000DA, 0x9100FF, 0xB600FF, 0x6D6D6D, 0xFF0091,
+//     0x004848, 0xDADADA, 0x006DDA, 0x004800, 0x242424, 0xFFFF6D, 0x919191, 0xFF00FF,
+//     0xFFB6FF, 0xFFFFFF, 0x6D4800, 0xFF0000, 0xFFDA00, 0x48FFDA, 0xFFFFFF, 0x91DAFF,
+//     0x000000, 0xFFB600, 0xDA6DFF, 0xB6DAFF, 0x6DDA00, 0xDAB6FF, 0x00FFFF, 0x244800,
+// ];
+pub const PPU_COLOR_COUNT: usize = 64;
 // const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
 // const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 const VBLANK_START_SCANLINE: u16 = 241;
@@ -41,9 +41,7 @@ pub struct PictureProcessingUnit {
     mask_sprites: bool,
     show_background: bool,
     show_sprites: bool,
-    emphasize_red: bool,
-    emphasize_green: bool,
-    emphasize_blue: bool,
+    color_emphasis: u16,
     // PPU_STATUS
     vblank: bool,
     next_vblank: bool, // For the purposes of emulating hardware multiplexing
@@ -63,6 +61,7 @@ pub struct PictureProcessingUnit {
     vblank_nmi_triggered: bool, // true if pulling /NMI low
     pub palette_ram: [u8; 32],
     primary_oam: Box<[u8; OAM_SIZE]>,
+    pub color_converter: ColorConverter,
 }
 
 impl PictureProcessingUnit {
@@ -78,9 +77,7 @@ impl PictureProcessingUnit {
             mask_sprites: false,
             show_background: false,
             show_sprites: false,
-            emphasize_red: false,
-            emphasize_green: false,
-            emphasize_blue: false,
+            color_emphasis: 0,
             vblank: false,
             next_vblank: false,
             sprite_0_hit: false,
@@ -95,6 +92,7 @@ impl PictureProcessingUnit {
             vblank_nmi_triggered: false,
             palette_ram: [0; 32],
             primary_oam: Box::new([0; OAM_SIZE]),
+            color_converter: ColorConverter::new(),
         }
     }
 
@@ -116,9 +114,7 @@ impl PictureProcessingUnit {
         self.mask_sprites = value & 0b100 != 0;
         self.show_background = value & 0b1000 != 0;
         self.show_sprites = value & 0b10000 != 0;
-        self.emphasize_red = value & 0b100000 != 0;
-        self.emphasize_green = value & 0b1000000 != 0;
-        self.emphasize_blue = value & 0b10000000 != 0;
+        self.color_emphasis = ((value & 0b11100000) as u16) << 1;
     }
 
     pub fn read_status(&mut self) -> u8 {
@@ -227,7 +223,7 @@ impl PictureProcessingUnit {
                 self.sprite_0_hit = false;
             }
             (scanline, dot) => {
-                if scanline == (self.primary_oam[0] as u16).wrapping_sub(1) && dot == self.primary_oam[3] as u16 {
+                if scanline == self.primary_oam[0] as u16 && dot == self.primary_oam[3] as u16 {
                     self.sprite_0_hit = true;
                 }
             }
@@ -265,20 +261,25 @@ impl PictureProcessingUnit {
             | (y as u16) >> 5 << 3
             | (x as u16) >> 5;
         let attribute_byte = cartridge.read_ppu_byte(attribute_address);
-        let attribute_bit = (y & 0b10) << 1 | (x & 0b10);
+        let attribute_bit = (y & 0b10000) >> 2 | (x & 0b10000) >> 3;
         let palette_base = ((attribute_byte >> attribute_bit) & 0b11) << 2;
 
         let mut sliver = [0; 8];
         for fine_x in 0 .. sliver.len() {
             let color_bit_0 = (plane_0_row >> (7 - fine_x)) & 1;
             let color_bit_1 = (plane_1_row >> (7 - fine_x)) & 1;
-            let color_index = palette_base | color_bit_1 << 1 | color_bit_0;
-            sliver[fine_x] = self.palette_ram[color_index as usize];
+            if color_bit_0 == 0 && color_bit_1 == 0 {
+                sliver[fine_x] = self.palette_ram[0];
+            }
+            else {
+                let color_index = palette_base | color_bit_1 << 1 | color_bit_0;
+                sliver[fine_x] = self.palette_ram[color_index as usize];
+            }
         }
         sliver
     }
 
     pub fn get_color_rgb(&self, index: u8) -> u32 {
-        PPU_COLORS[(index & 0b111111) as usize]
+        self.color_converter.get_rgb(self.color_emphasis | (index & 0b111111) as u16)
     }
 }

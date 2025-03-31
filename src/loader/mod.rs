@@ -1,8 +1,9 @@
 use std::io::Read;
+use crate::hardware::ppu::PPU_COLOR_COUNT;
 
-pub const PRG_BANK_SIZE: usize = 0x4000;
-pub const CHR_BANK_SIZE: usize = 0x2000;
-pub const NAMETABLE_SIZE: usize = 0x0400;
+const PRG_BANK_SIZE: usize = 0x4000;
+const CHR_BANK_SIZE: usize = 0x2000;
+const NAMETABLE_SIZE: usize = 0x0400;
 
 pub struct Cartridge {
     pub mapper_number: u8,
@@ -101,7 +102,46 @@ impl Cartridge {
     }
 
     fn get_nametable_index(&self, address: u16) -> usize {
-        let bit = 10 + self.nametable_arrangement as u16;
-        ((address >> bit) & 1) as usize
+        if self.nametable_arrangement {
+            ((address >> 10) & 1) as usize
+        }
+        else {
+            ((address >> 11) & 1) as usize
+        }
+    }
+}
+
+pub struct ColorConverter {
+    table: Box<[u32; PPU_COLOR_COUNT * 8]>,
+}
+
+impl ColorConverter {
+    pub fn new() -> Self {
+        Self {
+            table: Box::new([0_u32; PPU_COLOR_COUNT * 8]),
+        }
+    }
+    
+    pub fn parse_pal(&mut self, reader: &mut impl Read) -> Result<(), String> {
+        for color in self.table.as_mut_slice() {
+            let mut rgb = [0_u8; 3];
+            if let Err(err) = reader.read_exact(&mut rgb) {
+                if let std::io::ErrorKind::UnexpectedEof = err.kind() {
+                    for section in 1 .. 8 {
+                        self.table.copy_within(0 .. PPU_COLOR_COUNT, section * PPU_COLOR_COUNT);
+                    }
+                    break;
+                }
+                return Err(err.to_string());
+            }
+            
+            *color = (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
+        }
+        
+        Ok(())
+    }
+    
+    pub fn get_rgb(&self, index: u16) -> u32 {
+        self.table[(index & 0b111_111111) as usize]
     }
 }

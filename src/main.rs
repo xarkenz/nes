@@ -1,5 +1,5 @@
 use std::io::Write;
-use minifb::{Scale, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
 
@@ -51,6 +51,10 @@ pub fn parse_int<T: FromStrRadix>(string: &str) -> Result<T, std::num::ParseIntE
 pub fn main() {
     let mut machine = Machine::new();
     let mut user_input = String::new();
+
+    let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
+        .expect("failed to open pal file");
+    machine.ppu.color_converter.parse_pal(&mut pal_file).unwrap();
 
     loop {
         print!("> ");
@@ -216,25 +220,103 @@ pub fn main() {
             }
             println!();
         }
-        else if command.eq_ignore_ascii_case("Play") {
-            let mut buffer = vec![0_u32; 256 * 240];
+        else if command.eq_ignore_ascii_case("PTables") {
+            let Some(cartridge) = &machine.cartridge_slot else {
+                println!("Error: no cartridge loaded.");
+                continue;
+            };
+            
+            const GAP: usize = 8;
+            const TABLE_SIZE: usize = 128;
+            const WIDTH: usize = TABLE_SIZE + GAP + TABLE_SIZE;
+            const HEIGHT: usize = TABLE_SIZE;
+            const COLORS: [u32; 4] = [0x000000, 0xFFFFFF, 0x999999, 0x444444];
+            let mut buffer = vec![0xFF00FF_u32; WIDTH * HEIGHT];
+            
+            for (base_address, start_x) in [(0x0000, 0), (0x1000, TABLE_SIZE + GAP)] {
+                for coarse_y in 0b0000 ..= 0b1111 {
+                    for coarse_x in 0b0000 ..= 0b1111 {
+                        let pattern_address = base_address | coarse_y << 8 | coarse_x << 4;
+                        let tile_x = start_x + ((coarse_x as usize) << 3);
+                        let tile_y = (coarse_y as usize) << 3;
+                        for row in 0b000 ..= 0b111 {
+                            let plane_0_row_address = pattern_address | row;
+                            let plane_1_row_address = plane_0_row_address | 0b1000;
+                            let plane_0_row = cartridge.read_ppu_byte(plane_0_row_address);
+                            let plane_1_row = cartridge.read_ppu_byte(plane_1_row_address);
+                            let start_index = (tile_y + row as usize) * WIDTH + tile_x;
+                            for column in 0b000 ..= 0b111 {
+                                let color_bit_0 = (plane_0_row >> (7 - column)) & 1;
+                                let color_bit_1 = (plane_1_row >> (7 - column)) & 1;
+                                let color_index = color_bit_1 << 1 | color_bit_0;
+                                buffer[start_index + column] = COLORS[color_index as usize];
+                            }
+                        }
+                    }
+                }
+            }
+            
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X4;
+            let mut window = Window::new("NES CHR View", WIDTH, HEIGHT, window_options).unwrap();
+            window.set_target_fps(10);
+            while window.is_open() {
+                window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
+            }
+        }
+        else if command.eq_ignore_ascii_case("Play") {
+            let mut buffer = vec![0_u32; 256 * 240];
+            let mut base_nametable_address = 0x2000;
+            
+            let mut window_options = WindowOptions::default();
+            window_options.scale = Scale::X2;
             let mut window = Window::new("NES", 256, 240, window_options).unwrap();
             window.set_target_fps(60);
+            
             while window.is_open() {
+                for key in window.get_keys_pressed(KeyRepeat::No) {
+                    match key {
+                        Key::K => machine.controller_1[BUTTON_A] = true,
+                        Key::J => machine.controller_1[BUTTON_B] = true,
+                        Key::V => machine.controller_1[BUTTON_SELECT] = true,
+                        Key::B => machine.controller_1[BUTTON_START] = true,
+                        Key::W => machine.controller_1[BUTTON_UP] = true,
+                        Key::S => machine.controller_1[BUTTON_DOWN] = true,
+                        Key::A => machine.controller_1[BUTTON_LEFT] = true,
+                        Key::D => machine.controller_1[BUTTON_RIGHT] = true,
+                        Key::Key1 => base_nametable_address = 0x2000,
+                        Key::Key2 => base_nametable_address = 0x2400,
+                        Key::Key3 => base_nametable_address = 0x2800,
+                        Key::Key4 => base_nametable_address = 0x2C00,
+                        _ => {}
+                    }
+                }
+                for key in window.get_keys_released() {
+                    match key {
+                        Key::K => machine.controller_1[BUTTON_A] = false,
+                        Key::J => machine.controller_1[BUTTON_B] = false,
+                        Key::V => machine.controller_1[BUTTON_SELECT] = false,
+                        Key::B => machine.controller_1[BUTTON_START] = false,
+                        Key::W => machine.controller_1[BUTTON_UP] = false,
+                        Key::S => machine.controller_1[BUTTON_DOWN] = false,
+                        Key::A => machine.controller_1[BUTTON_LEFT] = false,
+                        Key::D => machine.controller_1[BUTTON_RIGHT] = false,
+                        _ => {}
+                    }
+                }
+                
                 machine.tick();
                 while !machine.ppu.is_at_top_left() {
                     machine.tick();
                 }
                 for (pos, sliver) in buffer.chunks_exact_mut(8).enumerate() {
-                    let base_nametable_address = 0x2000;
                     let x = ((pos as u8) & 0b11111) << 3;
                     let y = (pos >> 5) as u8;
                     let computed_sliver = machine.ppu.get_tile_sliver(base_nametable_address, x, y, &machine.cartridge_slot.as_ref().unwrap())
                         .map(|index| machine.ppu.get_color_rgb(index));
                     sliver.copy_from_slice(&computed_sliver);
                 }
+                
                 window.update_with_buffer(&buffer, 256, 240).unwrap();
             }
         }

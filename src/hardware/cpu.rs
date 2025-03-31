@@ -19,6 +19,9 @@ pub struct CentralProcessingUnit {
     pub status_byte: u8,
     pub oam_dma_address: u16,
     pub oam_dma_active: bool,
+    pub oam_dma_fetch: Option<u8>,
+    pub cycle_tick_count: u16,
+    pub is_put_cycle: bool,
     pub ticks_available: u16,
     pub pending_instruction: Option<&'static Instruction>,
 }
@@ -34,6 +37,9 @@ impl CentralProcessingUnit {
             status_byte: 0,
             oam_dma_address: 0,
             oam_dma_active: false,
+            oam_dma_fetch: None,
+            cycle_tick_count: 0,
+            is_put_cycle: false,
             ticks_available: 0,
             pending_instruction: None,
         }
@@ -60,6 +66,11 @@ impl CentralProcessingUnit {
 
     pub fn tick(&mut self) {
         self.ticks_available += 1;
+        self.cycle_tick_count += 1;
+        if self.cycle_tick_count >= TICKS_PER_CPU_CYCLE {
+            self.cycle_tick_count = 0;
+            self.is_put_cycle = !self.is_put_cycle;
+        }
     }
 
     pub fn debug_print_state(&self) {

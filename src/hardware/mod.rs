@@ -12,12 +12,29 @@ pub const STACK_PAGE: u16 = 0x0100;
 pub const NMI_VECTOR: u16 = 0xFFFA;
 pub const RESET_VECTOR: u16 = 0xFFFC;
 pub const IRQ_VECTOR: u16 = 0xFFFE;
+pub const CONTROLLER_1_REGISTER: u16 = 0x4016;
+pub const CONTROLLER_2_REGISTER: u16 = 0x4017;
+pub const BUTTON_A: usize = 0;
+pub const BUTTON_B: usize = 1;
+pub const BUTTON_SELECT: usize = 2;
+pub const BUTTON_START: usize = 3;
+pub const BUTTON_UP: usize = 4;
+pub const BUTTON_DOWN: usize = 5;
+pub const BUTTON_LEFT: usize = 6;
+pub const BUTTON_RIGHT: usize = 7;
+pub const BUTTON_COUNT: usize = 8;
+const CONTROLLER_EXCESS_READ: u8 = 0x01;
 
 pub struct Machine {
     pub cartridge_slot: Option<Cartridge>,
     pub cpu: CentralProcessingUnit,
     pub ppu: PictureProcessingUnit,
     internal_ram: Box<[u8; 0x0800]>,
+    pub controller_1: [bool; BUTTON_COUNT],
+    pub controller_2: [bool; BUTTON_COUNT],
+    controller_strobe: bool,
+    controller_1_button: usize,
+    controller_2_button: usize,
 }
 
 impl Machine {
@@ -27,6 +44,11 @@ impl Machine {
             cpu: CentralProcessingUnit::new(),
             ppu: PictureProcessingUnit::new(),
             internal_ram: Box::new([0; 0x0800]),
+            controller_1: [false; BUTTON_COUNT],
+            controller_2: [false; BUTTON_COUNT],
+            controller_strobe: false,
+            controller_1_button: BUTTON_COUNT,
+            controller_2_button: BUTTON_COUNT,
         }
     }
 
@@ -46,6 +68,31 @@ impl Machine {
                     self.ppu.read_vram_data(cartridge)
                 }),
                 _ => OPEN_BUS
+            }
+            CONTROLLER_1_REGISTER => {
+                // TODO: unconnected data lines
+                if self.controller_1_button >= BUTTON_COUNT {
+                    CONTROLLER_EXCESS_READ
+                }
+                else {
+                    let controller_read = self.controller_1[self.controller_1_button] as u8;
+                    if !self.controller_strobe {
+                        self.controller_1_button += 1;
+                    }
+                    controller_read
+                }
+            }
+            CONTROLLER_2_REGISTER => {
+                if self.controller_2_button >= BUTTON_COUNT {
+                    CONTROLLER_EXCESS_READ
+                }
+                else {
+                    let controller_read = self.controller_2[self.controller_2_button] as u8;
+                    if !self.controller_strobe {
+                        self.controller_2_button += 1;
+                    }
+                    controller_read
+                }
             }
             _ => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
                 cartridge.read_cpu_byte(address)
@@ -69,7 +116,7 @@ impl Machine {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize] = value;
             }
-            0x2000 ..= 0x3FFF => match address & 0x0007 {
+            0x2000 ..= 0x3FFF => match address & 0b111 {
                 PPU_CONTROL => self.ppu.write_control(value),
                 PPU_MASK => self.ppu.write_mask(value),
                 PPU_OAM_ADDRESS => self.ppu.write_oam_address(value),
@@ -83,6 +130,11 @@ impl Machine {
             }
             OAM_DMA_REGISTER => {
                 self.cpu.start_oam_dma(value);
+            }
+            CONTROLLER_1_REGISTER => {
+                self.controller_strobe = value & 0b1 != 0;
+                self.controller_1_button = 0;
+                self.controller_2_button = 0;
             }
             _ => if let Some(cartridge) = &mut self.cartridge_slot {
                 cartridge.write_cpu_byte(address, value);
@@ -149,6 +201,20 @@ impl Machine {
                 self.cpu.ticks_available -= ticks_needed;
                 self.cpu.pending_instruction = None;
                 instruction.execute(self);
+            }
+        }
+        else if self.cpu.oam_dma_active && self.cpu.cycle_tick_count == 0 {
+            if self.cpu.is_put_cycle {
+                if let Some(value) = self.cpu.oam_dma_fetch.take() {
+                    self.ppu.write_oam_data(value);
+                    if self.cpu.oam_dma_address & 0xFF == 0x00 {
+                        self.cpu.oam_dma_active = false;
+                    }
+                }
+            }
+            else {
+                self.cpu.oam_dma_fetch = Some(self.read_byte(self.cpu.oam_dma_address));
+                self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
             }
         }
         else {
