@@ -1,5 +1,6 @@
 use crate::hardware::instructions::Instruction;
 
+// TODO: double check order of status byte
 pub const CARRY_FLAG: usize = 0;
 pub const ZERO_FLAG: usize = 1;
 pub const INTERRUPT_DISABLE_FLAG: usize = 2;

@@ -35,6 +35,7 @@ pub struct Machine {
     controller_strobe: bool,
     controller_1_button: usize,
     controller_2_button: usize,
+    cycle_counter: u32,
 }
 
 impl Machine {
@@ -49,11 +50,13 @@ impl Machine {
             controller_strobe: false,
             controller_1_button: BUTTON_COUNT,
             controller_2_button: BUTTON_COUNT,
+            cycle_counter: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.cpu.program_counter = self.read_pair(RESET_VECTOR);
+        self.ppu.reset();
     }
 
     pub fn read_byte(&mut self, address: u16) -> u8 {
@@ -124,15 +127,16 @@ impl Machine {
                 PPU_SCROLL => self.ppu.write_scroll(value),
                 PPU_VRAM_ADDRESS => self.ppu.write_vram_address(value),
                 PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge_slot {
+                    // println!("${:04X}: writing ${:04X} = #${value:02X} at ({}, {})", self.cpu.program_counter, self.ppu.vram_address, self.ppu.scanline, self.ppu.dot);
                     self.ppu.write_vram_data(value, cartridge);
-                },
+                }
                 _ => {}
             }
             OAM_DMA_REGISTER => {
                 self.cpu.start_oam_dma(value);
             }
             CONTROLLER_1_REGISTER => {
-                self.controller_strobe = value & 0b1 != 0;
+                self.controller_strobe = value & 1 != 0;
                 self.controller_1_button = 0;
                 self.controller_2_button = 0;
             }
@@ -193,8 +197,8 @@ impl Machine {
 
     pub fn tick(&mut self) {
         self.ppu.tick();
-        
         self.cpu.tick();
+
         if let Some(instruction) = self.cpu.pending_instruction {
             let ticks_needed = instruction.cycles_needed() * TICKS_PER_CPU_CYCLE;
             if ticks_needed <= self.cpu.ticks_available {
@@ -203,19 +207,8 @@ impl Machine {
                 instruction.execute(self);
             }
         }
-        else if self.cpu.oam_dma_active && self.cpu.cycle_tick_count == 0 {
-            if self.cpu.is_put_cycle {
-                if let Some(value) = self.cpu.oam_dma_fetch.take() {
-                    self.ppu.write_oam_data(value);
-                    if self.cpu.oam_dma_address & 0xFF == 0x00 {
-                        self.cpu.oam_dma_active = false;
-                    }
-                }
-            }
-            else {
-                self.cpu.oam_dma_fetch = Some(self.read_byte(self.cpu.oam_dma_address));
-                self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
-            }
+        else if self.cpu.oam_dma_active {
+            self.tick_oam_dma();
         }
         else {
             let opcode = self.read_byte(self.cpu.program_counter);
@@ -224,6 +217,26 @@ impl Machine {
         
         if self.ppu.check_vblank_nmi() {
             self.handle_nmi();
+        }
+    }
+    
+    fn tick_oam_dma(&mut self) {
+        // Perform a get/put at the beginning of each CPU cycle
+        if self.cpu.cycle_tick_count != 0 {
+            return;
+        }
+        
+        if self.cpu.is_put_cycle {
+            if let Some(value) = self.cpu.oam_dma_fetch.take() {
+                self.ppu.write_oam_data(value);
+                if self.cpu.oam_dma_address & 0xFF == 0x00 {
+                    self.cpu.oam_dma_active = false;
+                }
+            }
+        }
+        else {
+            self.cpu.oam_dma_fetch = Some(self.read_byte(self.cpu.oam_dma_address));
+            self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
         }
     }
 }

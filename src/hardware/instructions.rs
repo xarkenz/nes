@@ -443,7 +443,7 @@ const UNMAPPED: Operation = Operation {
     mnemonic: "???",
     function: |_, _| {
         // Uh oh
-        panic!("yeah no can do sorry");
+        // panic!("yeah no can do sorry");
     },
 };
 
@@ -1096,6 +1096,7 @@ const TAY: Operation = Operation {
 const TSX: Operation = Operation {
     mnemonic: "TSX",
     function: |_, machine| {
+        // TODO: shouldn't set flags?
         machine.cpu.register_x = machine.cpu.stack_pointer;
 
         machine.cpu.set_result_flags(machine.cpu.register_x);
@@ -1118,6 +1119,7 @@ const TXA: Operation = Operation {
 const TXS: Operation = Operation {
     mnemonic: "TXS",
     function: |_, machine| {
+        // TODO: should set flags?
         machine.cpu.stack_pointer = machine.cpu.register_x;
     },
 };

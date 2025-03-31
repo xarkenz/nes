@@ -11,19 +11,9 @@ pub const PPU_VRAM_DATA: u16 = 7;
 pub const TICKS_PER_PPU_CYCLE: u16 = 1;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const OAM_SIZE: usize = 0x100;
-// const PPU_COLORS: [u32; PPU_COLOR_COUNT] = [
-//     0x916D00, 0x6D48DA, 0x009191, 0xDADA00, 0x000000, 0xFFB6B6, 0x002491, 0xDA6D00,
-//     0xB6B6B6, 0x6D2400, 0x00FF00, 0x00006D, 0xFFDA91, 0xFFFF00, 0x009100, 0xB6FF48,
-//     0xFF6DFF, 0x480000, 0x0048FF, 0xFF91FF, 0x000000, 0x484848, 0xB62400, 0xFF9100,
-//     0xDAB66D, 0x00B66D, 0x9191FF, 0x249100, 0x91006D, 0x000000, 0x91FF6D, 0x6DB6FF,
-//     0xB6006D, 0x006D24, 0x914800, 0x0000DA, 0x9100FF, 0xB600FF, 0x6D6D6D, 0xFF0091,
-//     0x004848, 0xDADADA, 0x006DDA, 0x004800, 0x242424, 0xFFFF6D, 0x919191, 0xFF00FF,
-//     0xFFB6FF, 0xFFFFFF, 0x6D4800, 0xFF0000, 0xFFDA00, 0x48FFDA, 0xFFFFFF, 0x91DAFF,
-//     0x000000, 0xFFB600, 0xDA6DFF, 0xB6DAFF, 0x6DDA00, 0xDAB6FF, 0x00FFFF, 0x244800,
-// ];
 pub const PPU_COLOR_COUNT: usize = 64;
-// const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
-// const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
+const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
+const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 const VBLANK_START_SCANLINE: u16 = 241;
 const MAX_SCANLINE: u16 = 261;
 const MAX_DOT: u16 = 341;
@@ -43,8 +33,8 @@ pub struct PictureProcessingUnit {
     show_sprites: bool,
     color_emphasis: u16,
     // PPU_STATUS
-    vblank: bool,
-    next_vblank: bool, // For the purposes of emulating hardware multiplexing
+    vblank_flag: bool,
+    next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
     sprite_0_hit: bool,
     sprite_overflow: bool,
     // PPU_OAM_ADDRESS
@@ -53,12 +43,16 @@ pub struct PictureProcessingUnit {
     fine_scroll_x: u8,
     origin_vram_address: u16,
     // PPU_VRAM_ADDRESS
-    vram_address: u16,
+    pub vram_address: u16,
+    // PPU_VRAM_DATA
+    vram_read_buffer: u8,
     // Internal
+    resetting: bool,
     write_latch: bool,
-    scanline: u16,
-    dot: u16,
-    vblank_nmi_triggered: bool, // true if pulling /NMI low
+    pub scanline: u16,
+    pub dot: u16,
+    pub in_vblank: bool,
+    vblank_nmi_triggered: bool, // true if actively pulling /NMI low
     pub palette_ram: [u8; 32],
     primary_oam: Box<[u8; OAM_SIZE]>,
     pub color_converter: ColorConverter,
@@ -78,25 +72,55 @@ impl PictureProcessingUnit {
             show_background: false,
             show_sprites: false,
             color_emphasis: 0,
-            vblank: false,
-            next_vblank: false,
+            vblank_flag: false,
+            next_vblank_flag: false,
             sprite_0_hit: false,
             sprite_overflow: false,
             oam_address: 0,
             fine_scroll_x: 0,
             origin_vram_address: 0,
             vram_address: 0,
+            vram_read_buffer: 0,
+            resetting: false,
             write_latch: false,
             scanline: 0,
             dot: 0,
+            in_vblank: false,
             vblank_nmi_triggered: false,
             palette_ram: [0; 32],
             primary_oam: Box::new([0; OAM_SIZE]),
             color_converter: ColorConverter::new(),
         }
     }
+    
+    pub fn reset(&mut self) {
+        self.resetting = true;
+        
+        self.vram_address_increment = 1;
+        self.sprite_ptable_address = 0;
+        self.background_ptable_address = 0;
+        self.tall_sprites = false;
+        self.vblank_nmi_enabled = false;
+        self.greyscale = false;
+        self.mask_background = false;
+        self.mask_sprites = false;
+        self.show_background = false;
+        self.show_sprites = false;
+        self.color_emphasis = 0;
+        self.fine_scroll_x = 0;
+        self.origin_vram_address = 0;
+        self.vram_read_buffer = 0;
+        self.write_latch = false;
+        self.scanline = 0;
+        self.dot = 0;
+        self.vblank_nmi_triggered = false;
+    }
 
     pub fn write_control(&mut self, value: u8) {
+        if self.resetting {
+            return;
+        }
+        
         self.origin_vram_address = (self.origin_vram_address & !0b11_00000_00000)
             | ((value & 0b11) as u16) << 10;
         self.vram_address_increment = if value & 0b100 != 0 { 32 } else { 1 };
@@ -104,11 +128,15 @@ impl PictureProcessingUnit {
         self.background_ptable_address = if value & 0b10000 != 0 { 0x1000 } else { 0x0000 };
         self.tall_sprites = value & 0b100000 != 0;
         let next_vblank_nmi_enabled = value & 0b10000000 != 0;
-        self.vblank_nmi_triggered |= self.next_vblank && next_vblank_nmi_enabled && !self.vblank_nmi_enabled;
+        self.vblank_nmi_triggered |= self.next_vblank_flag && next_vblank_nmi_enabled && !self.vblank_nmi_enabled;
         self.vblank_nmi_enabled = next_vblank_nmi_enabled;
     }
 
     pub fn write_mask(&mut self, value: u8) {
+        if self.resetting {
+            return;
+        }
+
         self.greyscale = value & 0b1 != 0;
         self.mask_background = value & 0b10 != 0;
         self.mask_sprites = value & 0b100 != 0;
@@ -118,10 +146,10 @@ impl PictureProcessingUnit {
     }
 
     pub fn read_status(&mut self) -> u8 {
-        let status = (self.vblank as u8) << 7
+        let status = (self.vblank_flag as u8) << 7
             | (self.sprite_0_hit as u8) << 6
             | (self.sprite_overflow as u8) << 5;
-        self.next_vblank = false;
+        self.next_vblank_flag = false;
         self.write_latch = false;
         status
     }
@@ -141,10 +169,14 @@ impl PictureProcessingUnit {
     }
 
     pub fn write_scroll(&mut self, value: u8) {
+        if self.resetting {
+            return;
+        }
+
         if self.write_latch {
             self.origin_vram_address = (self.origin_vram_address & !0b111_00_11111_00000)
                 | ((value & 0b00000111) as u16) << 12
-                | ((value & 0b11111000) as u16) << 5;
+                | ((value & 0b11111000) as u16) << 2;
             self.write_latch = false;
         }
         else {
@@ -156,6 +188,10 @@ impl PictureProcessingUnit {
     }
 
     pub fn write_vram_address(&mut self, value: u8) {
+        if self.resetting {
+            return;
+        }
+
         if self.write_latch {
             self.origin_vram_address = (self.origin_vram_address & 0xFF00)
                 | value as u16;
@@ -170,7 +206,12 @@ impl PictureProcessingUnit {
     }
 
     pub fn read_vram_data(&mut self, cartridge: &Cartridge) -> u8 {
-        let value = match self.vram_address & 0x3FFF {
+        if self.resetting {
+            return 0;
+        }
+
+        let value = self.vram_read_buffer;
+        self.vram_read_buffer = match self.vram_address & 0x3FFF {
             0x0000 ..= 0x3EFF => {
                 cartridge.read_ppu_byte(self.vram_address)
             }
@@ -183,7 +224,6 @@ impl PictureProcessingUnit {
     }
 
     pub fn write_vram_data(&mut self, value: u8, cartridge: &mut Cartridge) {
-        // println!("writing ${:04X} = #${value:02X}", self.vram_address);
         match self.vram_address & 0x3FFF {
             0x0000 ..= 0x3EFF => {
                 cartridge.write_ppu_byte(self.vram_address, value);
@@ -203,30 +243,51 @@ impl PictureProcessingUnit {
         std::mem::replace(&mut self.vblank_nmi_triggered, false)
     }
     
-    // TODO: temporary
     pub fn is_at_top_left(&self) -> bool {
         self.scanline == 0 && self.dot == 0
     }
 
     pub fn tick(&mut self) {
-        self.vblank = self.next_vblank;
+        self.vblank_flag = self.next_vblank_flag;
 
         match (self.scanline, self.dot) {
             (VBLANK_START_SCANLINE, 0) => {
-                self.next_vblank = true;
+                self.next_vblank_flag = true;
             }
             (VBLANK_START_SCANLINE, 1) => {
-                self.vblank_nmi_triggered |= self.vblank_nmi_enabled && self.vblank;
+                self.in_vblank = true;
+                self.vblank_nmi_triggered |= self.vblank_nmi_enabled && self.vblank_flag;
             }
-            (MAX_SCANLINE, 0) => {
-                self.next_vblank = false;
+            (MAX_SCANLINE, 1) => {
+                self.resetting = false;
+                self.next_vblank_flag = false;
                 self.sprite_0_hit = false;
+                self.sprite_overflow = false;
+                self.in_vblank = false;
             }
-            (scanline, dot) => {
-                if scanline == self.primary_oam[0] as u16 && dot == self.primary_oam[3] as u16 {
-                    self.sprite_0_hit = true;
-                }
-            }
+            // (MAX_SCANLINE, 280 ..= 304) => {
+            //     self.vram_address &= HORIZONTAL_BITS;
+            //     self.vram_address |= self.origin_vram_address & VERTICAL_BITS;
+            // }
+            // (MAX_SCANLINE | 0 ..= 239, 256) => {
+            //     self.increment_fine_y();
+            //     self.increment_coarse_x();
+            // }
+            // (MAX_SCANLINE | 0 ..= 239, 257) => {
+            //     self.vram_address &= VERTICAL_BITS;
+            //     self.vram_address |= self.origin_vram_address & HORIZONTAL_BITS;
+            // }
+            // (MAX_SCANLINE | 0 ..= 239, 8 ..= 256 | 328..) if self.dot & 0b111 == 0 => {
+            //     self.increment_coarse_x();
+            // }
+            _ => {}
+        }
+        // if self.scanline == MAX_SCANLINE || self.scanline <= 239 {
+        //     println!("({:03}, {:03}): %{:015b}", self.scanline, self.dot, self.vram_address);
+        // }
+        
+        if self.scanline == self.primary_oam[0] as u16 && self.dot == self.primary_oam[3] as u16 {
+            self.sprite_0_hit = true;
         }
 
         if self.dot < MAX_DOT {
@@ -240,6 +301,48 @@ impl PictureProcessingUnit {
             else {
                 self.scanline = 0;
             }
+        }
+    }
+    
+    fn increment_coarse_x(&mut self) {
+        if self.vram_address & 0b11111 == 0b11111 {
+            // Coarse X will overflow the 5-bit field
+            // Switch to the horizontally adjacent nametable
+            self.vram_address ^= 0b01_00000_00000;
+            // Simulate the overflow by setting the field to 0
+            self.vram_address &= !0b11111;
+        }
+        else {
+            // No overflow will occur, so add 1 to coarse X
+            self.vram_address = self.vram_address.wrapping_add(0b00001);
+        }
+    }
+    
+    fn increment_coarse_y(&mut self) {
+        if self.vram_address & 0b11101_00000 == 0b11101_00000 {
+            // Coarse Y is either 29 (last row of the screen) or will overflow the 5-bit field
+            // If coarse Y is 29, switch to the vertically adjacent nametable
+            self.vram_address ^= (self.vram_address & 0b00010_00000) << 5;
+            // Simulate the overflow by setting the field to 0
+            self.vram_address &= !0b11111_00000;
+        }
+        else {
+            // No overflow will occur, so add 1 to coarse Y
+            self.vram_address = self.vram_address.wrapping_add(0b00001_00000);
+        }
+    }
+    
+    fn increment_fine_y(&mut self) {
+        if self.vram_address & 0b111_00_00000_00000 == 0b111_00_00000_00000 {
+            // Fine Y will overflow the 3-bit field
+            // The fine Y field carries to the coarse Y field, so increment that instead
+            self.increment_coarse_y();
+            // Simulate the overflow by setting the field to 0
+            self.vram_address &= !0b111_00_00000_00000;
+        }
+        else {
+            // No overflow will occur, so add 1 to fine Y
+            self.vram_address = self.vram_address.wrapping_add(0b001_00_00000_00000);
         }
     }
 

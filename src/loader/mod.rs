@@ -13,6 +13,7 @@ pub struct Cartridge {
     pub prg_rom: Vec<Box<[u8; PRG_BANK_SIZE]>>,
     pub chr_rom: Vec<Box<[u8; CHR_BANK_SIZE]>>,
     nametables: [Box<[u8; NAMETABLE_SIZE]>; 2],
+    prg_bank_2_index: usize,
 }
 
 impl Cartridge {
@@ -43,6 +44,7 @@ impl Cartridge {
             prg_rom: Vec::with_capacity(prg_rom_banks),
             chr_rom: Vec::with_capacity(chr_rom_banks),
             nametables: [Box::new([0; NAMETABLE_SIZE]), Box::new([0; NAMETABLE_SIZE])],
+            prg_bank_2_index: prg_rom_banks - 1,
         };
 
         for bank in 0 .. prg_rom_banks {
@@ -64,7 +66,7 @@ impl Cartridge {
                 self.prg_rom[0][(address & 0x3FFF) as usize]
             }
             0xC000 ..= 0xFFFF => {
-                self.prg_rom[1][(address & 0x3FFF) as usize]
+                self.prg_rom[self.prg_bank_2_index][(address & 0x3FFF) as usize]
             }
             _ => crate::hardware::OPEN_BUS
         }
@@ -79,7 +81,7 @@ impl Cartridge {
         // Temporary, should be deferred to a polymorphic mapper object
         match address & 0x3FFF {
             0x0000 ..= 0x1FFF => {
-                self.chr_rom[0][address as usize]
+                self.chr_rom[0][(address & 0x1FFF) as usize]
             }
             _ => {
                 let index = self.get_nametable_index(address);

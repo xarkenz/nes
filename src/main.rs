@@ -108,6 +108,16 @@ pub fn main() {
         else if command.eq_ignore_ascii_case("State") {
             machine.cpu.debug_print_state();
         }
+        else if command.eq_ignore_ascii_case("SetPC") {
+            let address = match parse_int(argument) {
+                Ok(address) => address,
+                Err(error) => {
+                    eprintln!("Error: invalid address: {error}");
+                    continue;
+                }
+            };
+            machine.cpu.program_counter = address;
+        }
         else if command.eq_ignore_ascii_case("Byte") {
             let address = match parse_int(argument) {
                 Ok(address) => address,
@@ -274,7 +284,8 @@ pub fn main() {
             window.set_target_fps(60);
             
             while window.is_open() {
-                for key in window.get_keys_pressed(KeyRepeat::No) {
+                machine.controller_1.fill(false);
+                for key in window.get_keys() {
                     match key {
                         Key::K => machine.controller_1[BUTTON_A] = true,
                         Key::J => machine.controller_1[BUTTON_B] = true,
@@ -288,19 +299,6 @@ pub fn main() {
                         Key::Key2 => base_nametable_address = 0x2400,
                         Key::Key3 => base_nametable_address = 0x2800,
                         Key::Key4 => base_nametable_address = 0x2C00,
-                        _ => {}
-                    }
-                }
-                for key in window.get_keys_released() {
-                    match key {
-                        Key::K => machine.controller_1[BUTTON_A] = false,
-                        Key::J => machine.controller_1[BUTTON_B] = false,
-                        Key::V => machine.controller_1[BUTTON_SELECT] = false,
-                        Key::B => machine.controller_1[BUTTON_START] = false,
-                        Key::W => machine.controller_1[BUTTON_UP] = false,
-                        Key::S => machine.controller_1[BUTTON_DOWN] = false,
-                        Key::A => machine.controller_1[BUTTON_LEFT] = false,
-                        Key::D => machine.controller_1[BUTTON_RIGHT] = false,
                         _ => {}
                     }
                 }
