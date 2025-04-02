@@ -1,5 +1,5 @@
 use std::io::Write;
-use minifb::{Key, KeyRepeat, Scale, Window, WindowOptions};
+use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
 
@@ -78,7 +78,7 @@ pub fn main() {
             let mut file = match std::fs::File::open(argument) {
                 Ok(file) => file,
                 Err(error) => {
-                    eprintln!("Error: failed to open: {error}");
+                    eprintln!("Error: Failed to open file: {error}");
                     continue;
                 }
             };
@@ -86,7 +86,7 @@ pub fn main() {
             let cartridge = match Cartridge::parse_ines(&mut file) {
                 Ok(file) => file,
                 Err(error) => {
-                    eprintln!("Error: failed to parse: {error}");
+                    eprintln!("Error: Failed to parse file: {error}");
                     continue;
                 }
             };
@@ -211,6 +211,27 @@ pub fn main() {
                     println!("${address:04X}: {opcode:02X}       ; {disassembly}");
                 }
             }
+        }
+        else if command.eq_ignore_ascii_case("StartDis") {
+            machine.start_debug_disassembly();
+            println!("Debug disassembly is now active.");
+        }
+        else if command.eq_ignore_ascii_case("EndDis") {
+            let mut file = match std::fs::File::create(argument) {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!("Error: Failed to create file: {error}");
+                    continue;
+                }
+            };
+
+            if let Err(error) = machine.end_debug_disassembly(&mut file) {
+                eprintln!("Error: Failed to write to file: {error}");
+                let _ = std::fs::remove_file(argument);
+                continue;
+            }
+            
+            println!("Debug disassembly successfully dumped to file.");
         }
         else if command.eq_ignore_ascii_case("Palette") {
             print!("BG: ");

@@ -1,13 +1,5 @@
 use crate::hardware::instructions::Instruction;
 
-// TODO: double check order of status byte
-pub const CARRY_FLAG: usize = 0;
-pub const ZERO_FLAG: usize = 1;
-pub const INTERRUPT_DISABLE_FLAG: usize = 2;
-pub const DECIMAL_FLAG: usize = 3; // NOTE: BCD mode is disabled in the Ricoh 2A03
-pub const BREAK_FLAG: usize = 4;
-pub const OVERFLOW_FLAG: usize = 5;
-pub const NEGATIVE_FLAG: usize = 6;
 pub const OAM_DMA_REGISTER: u16 = 0x4014;
 pub const TICKS_PER_CPU_CYCLE: u16 = 3;
 
@@ -17,7 +9,12 @@ pub struct CentralProcessingUnit {
     pub register_x: u8,
     pub register_y: u8,
     pub stack_pointer: u8,
-    pub status_byte: u8,
+    pub carry_flag: bool,
+    pub zero_flag: bool,
+    pub interrupt_disable_flag: bool,
+    pub decimal_mode_flag: bool,
+    pub overflow_flag: bool,
+    pub negative_flag: bool,
     pub oam_dma_address: u16,
     pub oam_dma_active: bool,
     pub oam_dma_fetch: Option<u8>,
@@ -35,7 +32,12 @@ impl CentralProcessingUnit {
             register_x: 0,
             register_y: 0,
             stack_pointer: 0,
-            status_byte: 0,
+            carry_flag: false,
+            zero_flag: false,
+            interrupt_disable_flag: false,
+            decimal_mode_flag: false,
+            overflow_flag: false,
+            negative_flag: false,
             oam_dma_address: 0,
             oam_dma_active: false,
             oam_dma_fetch: None,
@@ -46,18 +48,29 @@ impl CentralProcessingUnit {
         }
     }
 
-    pub fn get_flag(&self, flag: usize) -> bool {
-        (self.status_byte >> flag) & 1 != 0
+    pub fn get_status_byte(&self, break_flag: bool) -> u8 {
+        0b00100000 // Bit 5 is always set
+            | self.carry_flag as u8
+            | (self.zero_flag as u8) << 1
+            | (self.interrupt_disable_flag as u8) << 2
+            | (self.decimal_mode_flag as u8) << 3
+            | (break_flag as u8) << 4
+            | (self.overflow_flag as u8) << 6
+            | (self.negative_flag as u8) << 7
     }
 
-    pub fn set_flag(&mut self, flag: usize, value: bool) {
-        let mask = 1 << flag;
-        self.status_byte = (self.status_byte & !mask) | ((value as u8) << flag);
+    pub fn set_status_byte(&mut self, status: u8) {
+        self.carry_flag = status & 0b00000001 != 0;
+        self.zero_flag = status & 0b00000010 != 0;
+        self.interrupt_disable_flag = status & 0b00000100 != 0;
+        self.decimal_mode_flag = status & 0b00001000 != 0;
+        self.overflow_flag = status & 0b01000000 != 0;
+        self.negative_flag = status & 0b10000000 != 0;
     }
 
     pub fn set_result_flags(&mut self, result: u8) {
-        self.set_flag(ZERO_FLAG, result == 0);
-        self.set_flag(NEGATIVE_FLAG, (result & 0x80) != 0);
+        self.zero_flag = result == 0;
+        self.negative_flag = (result & 0b10000000) != 0;
     }
 
     pub fn start_oam_dma(&mut self, page: u8) {
@@ -81,7 +94,7 @@ impl CentralProcessingUnit {
         println!("    A:      ${:02X}", self.accumulator);
         println!("    X:      ${:02X}", self.register_x);
         println!("    Y:      ${:02X}", self.register_y);
-        println!("    Status:  CZIDBVN-");
-        println!("            %{:08b}", self.status_byte);
+        println!("    Status:  NV.BDIZC");
+        println!("            %{:08b}", self.get_status_byte(false));
     }
 }

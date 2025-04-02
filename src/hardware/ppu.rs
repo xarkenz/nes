@@ -92,10 +92,10 @@ impl PictureProcessingUnit {
             color_converter: ColorConverter::new(),
         }
     }
-    
+
     pub fn reset(&mut self) {
         self.resetting = true;
-        
+
         self.vram_address_increment = 1;
         self.sprite_ptable_address = 0;
         self.background_ptable_address = 0;
@@ -120,7 +120,7 @@ impl PictureProcessingUnit {
         if self.resetting {
             return;
         }
-        
+
         self.origin_vram_address = (self.origin_vram_address & !0b11_00000_00000)
             | ((value & 0b11) as u16) << 10;
         self.vram_address_increment = if value & 0b100 != 0 { 32 } else { 1 };
@@ -242,7 +242,7 @@ impl PictureProcessingUnit {
     pub fn check_vblank_nmi(&mut self) -> bool {
         std::mem::replace(&mut self.vblank_nmi_triggered, false)
     }
-    
+
     pub fn is_at_top_left(&self) -> bool {
         self.scanline == 0 && self.dot == 0
     }
@@ -285,7 +285,7 @@ impl PictureProcessingUnit {
         // if self.scanline == MAX_SCANLINE || self.scanline <= 239 {
         //     println!("({:03}, {:03}): %{:015b}", self.scanline, self.dot, self.vram_address);
         // }
-        
+
         if self.scanline == self.primary_oam[0] as u16 && self.dot == self.primary_oam[3] as u16 {
             self.sprite_0_hit = true;
         }
@@ -303,7 +303,7 @@ impl PictureProcessingUnit {
             }
         }
     }
-    
+
     fn increment_coarse_x(&mut self) {
         if self.vram_address & 0b11111 == 0b11111 {
             // Coarse X will overflow the 5-bit field
@@ -317,7 +317,7 @@ impl PictureProcessingUnit {
             self.vram_address = self.vram_address.wrapping_add(0b00001);
         }
     }
-    
+
     fn increment_coarse_y(&mut self) {
         if self.vram_address & 0b11101_00000 == 0b11101_00000 {
             // Coarse Y is either 29 (last row of the screen) or will overflow the 5-bit field
@@ -331,7 +331,7 @@ impl PictureProcessingUnit {
             self.vram_address = self.vram_address.wrapping_add(0b00001_00000);
         }
     }
-    
+
     fn increment_fine_y(&mut self) {
         if self.vram_address & 0b111_00_00000_00000 == 0b111_00_00000_00000 {
             // Fine Y will overflow the 3-bit field

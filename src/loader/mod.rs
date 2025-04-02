@@ -22,18 +22,18 @@ impl Cartridge {
         reader.read_exact(&mut header).map_err(|err| err.to_string())?;
 
         if &header[0 ..= 3] != b"NES\x1A" {
-            return Err("NES file format error".to_string());
+            return Err("iNES file format error.".to_string());
         }
 
         let prg_rom_banks = header[4] as usize;
         let chr_rom_banks = header[5] as usize;
         if prg_rom_banks > 16 || chr_rom_banks > 32 {
-            return Err("ROM size limit exceeded".to_string());
+            return Err("ROM size limit exceeded.".to_string());
         }
 
         let mapper_number = header[6] >> 4;
         if mapper_number != 0 {
-            return Err("Unsupported mapper".to_string());
+            return Err(format!("Unsupported mapper: {mapper_number}."));
         }
 
         let mut cartridge = Cartridge {

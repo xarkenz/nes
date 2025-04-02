@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::io::Write;
 use instructions::*;
 use ppu::*;
 use cpu::*;
@@ -7,7 +9,7 @@ pub mod instructions;
 pub mod ppu;
 pub mod cpu;
 
-pub const OPEN_BUS: u8 = 0xAA; // Can be any byte value
+pub const OPEN_BUS: u8 = 0x00; // Can be any byte value
 pub const STACK_PAGE: u16 = 0x0100;
 pub const NMI_VECTOR: u16 = 0xFFFA;
 pub const RESET_VECTOR: u16 = 0xFFFC;
@@ -35,7 +37,7 @@ pub struct Machine {
     controller_strobe: bool,
     controller_1_button: usize,
     controller_2_button: usize,
-    cycle_counter: u32,
+    debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
 }
 
 impl Machine {
@@ -50,8 +52,30 @@ impl Machine {
             controller_strobe: false,
             controller_1_button: BUTTON_COUNT,
             controller_2_button: BUTTON_COUNT,
-            cycle_counter: 0,
+            debug_disassembly: None,
         }
+    }
+    
+    pub fn start_debug_disassembly(&mut self) {
+        self.debug_disassembly = Some(BTreeMap::new());
+    }
+    
+    pub fn end_debug_disassembly(&mut self, writer: &mut impl Write) -> Result<(), String> {
+        let Some(disassembly) = self.debug_disassembly.take() else {
+            return Err("Debug disassembly is not active.".to_string());
+        };
+        
+        let mut predicted_address = 0;
+        for (address, (length, statement)) in disassembly {
+            if predicted_address != 0 && address != predicted_address {
+                // Instructions are nonconsecutive; leave a blank line
+                writeln!(writer).map_err(|err| err.to_string())?;
+            }
+            writeln!(writer, "{statement}").map_err(|err| err.to_string())?;
+            predicted_address = address.wrapping_add(length);
+        }
+        
+        Ok(())
     }
 
     pub fn reset(&mut self) {
@@ -157,9 +181,25 @@ impl Machine {
         let high = self.read_byte_silent(address.wrapping_add(1)) as u16;
         (high << 8) | low
     }
+    
+    pub fn read_pair_paged(&mut self, address: u16) -> u16 {
+        let low = self.read_byte(address) as u16;
+        // Address increment must not affect page number
+        let high_address = (address & 0xFF00) | (address.wrapping_add(1) & 0x00FF);
+        let high = self.read_byte(high_address) as u16;
+        (high << 8) | low
+    }
+
+    pub fn read_pair_paged_silent(&self, address: u16) -> u16 {
+        let low = self.read_byte_silent(address) as u16;
+        // Address increment must not affect page number
+        let high_address = (address & 0xFF00) | (address.wrapping_add(1) & 0x00FF);
+        let high = self.read_byte_silent(high_address) as u16;
+        (high << 8) | low
+    }
 
     pub fn write_pair(&mut self, address: u16, value: u16) {
-        let low = (value & 0xFF) as u8;
+        let low = (value & 0x00FF) as u8;
         let high = (value >> 8) as u8;
         self.write_byte(address, low);
         self.write_byte(address.wrapping_add(1), high);
@@ -191,7 +231,7 @@ impl Machine {
     pub fn handle_nmi(&mut self) {
         self.cpu.pending_instruction = None;
         self.stack_push_pair(self.cpu.program_counter);
-        self.stack_push_byte(self.cpu.status_byte);
+        self.stack_push_byte(self.cpu.get_status_byte(false));
         self.cpu.program_counter = self.read_pair(NMI_VECTOR);
     }
 
@@ -204,6 +244,16 @@ impl Machine {
             if ticks_needed <= self.cpu.ticks_available {
                 self.cpu.ticks_available -= ticks_needed;
                 self.cpu.pending_instruction = None;
+
+                if let Some(mut disassembly) = self.debug_disassembly.take() {
+                    let program_counter = self.cpu.program_counter;
+                    disassembly.entry(program_counter).or_insert_with(|| (
+                        instruction.size_bytes(),
+                        format!("${program_counter:04X}: {}", instruction.disassemble(self, program_counter)),
+                    ));
+                    self.debug_disassembly = Some(disassembly);
+                }
+
                 instruction.execute(self);
             }
         }
