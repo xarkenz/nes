@@ -9,14 +9,17 @@ pub const PPU_SCROLL: u16 = 5;
 pub const PPU_VRAM_ADDRESS: u16 = 6;
 pub const PPU_VRAM_DATA: u16 = 7;
 pub const TICKS_PER_PPU_CYCLE: u16 = 1;
+pub const PPU_COLOR_COUNT: usize = 64;
+pub const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
+pub const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
+pub const SCREEN_WIDTH: usize = 256;
+pub const SCREEN_HEIGHT: usize = 240;
+pub const VBLANK_START_SCANLINE: u16 = 241;
+pub const PRE_RENDER_SCANLINE: u16 = 325; // 261; // FIXME: vblank should not need to be this long
+pub const LAST_DOT: u16 = 341;
+const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const OAM_SIZE: usize = 0x100;
-pub const PPU_COLOR_COUNT: usize = 64;
-const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
-const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
-const VBLANK_START_SCANLINE: u16 = 241;
-const MAX_SCANLINE: u16 = 261;
-const MAX_DOT: u16 = 341;
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -53,9 +56,11 @@ pub struct PictureProcessingUnit {
     pub dot: u16,
     pub in_vblank: bool,
     vblank_nmi_triggered: bool, // true if actively pulling /NMI low
+    sliver_shifter: [u8; 16], // epic variable name
     pub palette_ram: [u8; 32],
     primary_oam: Box<[u8; OAM_SIZE]>,
     pub color_converter: ColorConverter,
+    pub screen_buffer: Box<[u32; SCREEN_WIDTH * SCREEN_HEIGHT]>,
 }
 
 impl PictureProcessingUnit {
@@ -87,9 +92,11 @@ impl PictureProcessingUnit {
             dot: 0,
             in_vblank: false,
             vblank_nmi_triggered: false,
+            sliver_shifter: [0; 16],
             palette_ram: [0; 32],
             primary_oam: Box::new([0; OAM_SIZE]),
             color_converter: ColorConverter::new(),
+            screen_buffer: Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT]),
         }
     }
 
@@ -247,7 +254,11 @@ impl PictureProcessingUnit {
         self.scanline == 0 && self.dot == 0
     }
 
-    pub fn tick(&mut self) {
+    pub fn is_entering_vblank(&self) -> bool {
+        self.scanline == VBLANK_START_SCANLINE && self.dot == 0
+    }
+
+    pub fn tick(&mut self, cartridge: Option<&Cartridge>) {
         self.vblank_flag = self.next_vblank_flag;
 
         match (self.scanline, self.dot) {
@@ -258,50 +269,66 @@ impl PictureProcessingUnit {
                 self.in_vblank = true;
                 self.vblank_nmi_triggered |= self.vblank_nmi_enabled && self.vblank_flag;
             }
-            (MAX_SCANLINE, 1) => {
+            (PRE_RENDER_SCANLINE, 1) => {
                 self.resetting = false;
                 self.next_vblank_flag = false;
                 self.sprite_0_hit = false;
                 self.sprite_overflow = false;
                 self.in_vblank = false;
             }
-            // (MAX_SCANLINE, 280 ..= 304) => {
-            //     self.vram_address &= HORIZONTAL_BITS;
-            //     self.vram_address |= self.origin_vram_address & VERTICAL_BITS;
-            // }
-            // (MAX_SCANLINE | 0 ..= 239, 256) => {
-            //     self.increment_fine_y();
-            //     self.increment_coarse_x();
-            // }
-            // (MAX_SCANLINE | 0 ..= 239, 257) => {
-            //     self.vram_address &= VERTICAL_BITS;
-            //     self.vram_address |= self.origin_vram_address & HORIZONTAL_BITS;
-            // }
-            // (MAX_SCANLINE | 0 ..= 239, 8 ..= 256 | 328..) if self.dot & 0b111 == 0 => {
-            //     self.increment_coarse_x();
-            // }
+            // FIXME: why does super mario bros keep writing vram until >50 SCANLINES PAST VBLANK.
+            (0 ..= 239 | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
+                self.draw_shifted_sliver();
+                self.increment_coarse_x();
+                self.load_next_sliver(cartridge);
+                if self.dot == 256 {
+                    self.increment_fine_y();
+                }
+            }
+            (0 ..= 239 | PRE_RENDER_SCANLINE, 257) => {
+                self.reset_coarse_x();
+            }
+            (0 ..= 239 | PRE_RENDER_SCANLINE, 328 | 336) => {
+                self.increment_coarse_x();
+                self.load_next_sliver(cartridge);
+            }
+            (PRE_RENDER_SCANLINE, 280 ..= 304) => {
+                self.reset_fine_y();
+            }
             _ => {}
         }
-        // if self.scanline == MAX_SCANLINE || self.scanline <= 239 {
-        //     println!("({:03}, {:03}): %{:015b}", self.scanline, self.dot, self.vram_address);
-        // }
 
         if self.scanline == self.primary_oam[0] as u16 && self.dot == self.primary_oam[3] as u16 {
+            // FIXME: not the correct implementation, integrate with future sprite logic
             self.sprite_0_hit = true;
         }
 
-        if self.dot < MAX_DOT {
+        if self.dot < LAST_DOT {
             self.dot = self.dot.wrapping_add(1);
         }
         else {
             self.dot = 0;
-            if self.scanline < MAX_SCANLINE {
+            if self.scanline < PRE_RENDER_SCANLINE {
                 self.scanline = self.scanline.wrapping_add(1);
             }
             else {
                 self.scanline = 0;
             }
         }
+    }
+    
+    fn reset_coarse_x(&mut self) {
+        // Retain the bits related to vertical position
+        self.vram_address &= VERTICAL_BITS;
+        // Copy coarse X and horizontal nametable bit from the origin VRAM address
+        self.vram_address |= self.origin_vram_address & HORIZONTAL_BITS;
+    }
+    
+    fn reset_fine_y(&mut self) {
+        // Retain the bits related to horizontal position
+        self.vram_address &= HORIZONTAL_BITS;
+        // Copy fine Y, coarse Y, and vertical nametable bit from the origin VRAM address
+        self.vram_address |= self.origin_vram_address & VERTICAL_BITS;
     }
 
     fn increment_coarse_x(&mut self) {
@@ -345,41 +372,85 @@ impl PictureProcessingUnit {
             self.vram_address = self.vram_address.wrapping_add(0b001_00_00000_00000);
         }
     }
+    
+    fn load_next_sliver(&mut self, cartridge: Option<&Cartridge>) {
+        // Make room for the next sliver to be stored by shifting the right sliver to the left
+        self.sliver_shifter.copy_within(8.., 0);
+        // Compute sliver color indices
+        let sliver = match cartridge {
+            Some(cartridge) => self.compute_sliver(self.vram_address, cartridge),
+            None => [0; 8],
+        };
+        self.sliver_shifter[8..].copy_from_slice(&sliver);
+    }
 
-    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &Cartridge) -> [u8; 8] {
+    fn draw_shifted_sliver(&mut self) {
+        // Make sure we are on a render scanline (dot is guaranteed to be valid unless there is a
+        // logic error in the tick() method)
+        if self.scanline as usize >= SCREEN_HEIGHT {
+            return;
+        }
+        
+        // The current dot is at the pixel immediately after the sliver being drawn, hence minus 8
+        let base_pixel_index = self.scanline as usize * SCREEN_WIDTH + self.dot as usize - 8;
+        let shift_amount = self.fine_scroll_x as usize;
+        for offset in 0 .. 8 {
+            let color_index = self.sliver_shifter[shift_amount + offset];
+            self.screen_buffer[base_pixel_index + offset] = self.get_color_rgb(color_index);
+        }
+    }
+    
+    fn compute_sliver(&self, vram_address: u16, cartridge: &Cartridge) -> [u8; 8] {
         // 10 NN YYYYY XXXXX
-        let tile_address = base_nametable_address
-            | (y as u16) >> 3 << 5
-            | (x as u16) >> 3;
+        let tile_address = NAMETABLES_START_ADDRESS | (vram_address & 0b11_11111_11111);
+        // yyy
+        let fine_y = (vram_address >> 12) & 0b111;
+
         let pattern_number = cartridge.read_ppu_byte(tile_address);
+        // .. PPPPPPPP 0 000
         let pattern_address = self.background_ptable_address | (pattern_number as u16) << 4;
-        let plane_0_row_address = pattern_address | (y & 0b111) as u16;
+        // .. PPPPPPPP 0 yyy
+        let plane_0_row_address = pattern_address | fine_y;
+        // .. PPPPPPPP 1 yyy
         let plane_1_row_address = plane_0_row_address | 0b1000;
         let plane_0_row = cartridge.read_ppu_byte(plane_0_row_address);
         let plane_1_row = cartridge.read_ppu_byte(plane_1_row_address);
 
         // 10 NN 1111 YYY XXX
-        let attribute_address = base_nametable_address
+        let attribute_address = (tile_address & 0b11_11_00000_00000)
             | ATTRIBUTE_OFFSET
-            | (y as u16) >> 5 << 3
-            | (x as u16) >> 5;
+            | (tile_address & 0b11100_00000) >> 4
+            | (tile_address & 0b00000_11100) >> 2;
         let attribute_byte = cartridge.read_ppu_byte(attribute_address);
-        let attribute_bit = (y & 0b10000) >> 2 | (x & 0b10000) >> 3;
+        // YX0
+        let attribute_bit = (tile_address & 0b00010_00000) >> 4 | (tile_address & 0b00000_00010);
+        // 0 pp 00
         let palette_base = ((attribute_byte >> attribute_bit) & 0b11) << 2;
 
         let mut sliver = [0; 8];
-        for fine_x in 0 .. sliver.len() {
-            let color_bit_0 = (plane_0_row >> (7 - fine_x)) & 1;
-            let color_bit_1 = (plane_1_row >> (7 - fine_x)) & 1;
+        for offset in 0 .. sliver.len() {
+            let color_bit_0 = (plane_0_row >> (7 - offset)) & 1;
+            let color_bit_1 = (plane_1_row >> (7 - offset)) & 1;
             if color_bit_0 == 0 && color_bit_1 == 0 {
-                sliver[fine_x] = self.palette_ram[0];
+                sliver[offset] = self.palette_ram[0];
             }
             else {
+                // 0 pp cc
                 let color_index = palette_base | color_bit_1 << 1 | color_bit_0;
-                sliver[fine_x] = self.palette_ram[color_index as usize];
+                sliver[offset] = self.palette_ram[color_index as usize];
             }
         }
         sliver
+    }
+
+    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &Cartridge) -> [u8; 8] {
+        // yyy NN YYYYY XXXXX
+        let vram_address = (base_nametable_address & 0b11_00000_00000) // Nametable select
+            | (y as u16) >> 3 << 5 // Coarse Y
+            | ((y as u16) & 0b111) << 12 // Fine Y
+            | (x as u16) >> 3; // Coarse X
+        
+        self.compute_sliver(vram_address, cartridge)
     }
 
     pub fn get_color_rgb(&self, index: u8) -> u32 {

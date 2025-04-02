@@ -55,16 +55,16 @@ impl Machine {
             debug_disassembly: None,
         }
     }
-    
+
     pub fn start_debug_disassembly(&mut self) {
         self.debug_disassembly = Some(BTreeMap::new());
     }
-    
+
     pub fn end_debug_disassembly(&mut self, writer: &mut impl Write) -> Result<(), String> {
         let Some(disassembly) = self.debug_disassembly.take() else {
             return Err("Debug disassembly is not active.".to_string());
         };
-        
+
         let mut predicted_address = 0;
         for (address, (length, statement)) in disassembly {
             if predicted_address != 0 && address != predicted_address {
@@ -74,7 +74,7 @@ impl Machine {
             writeln!(writer, "{statement}").map_err(|err| err.to_string())?;
             predicted_address = address.wrapping_add(length);
         }
-        
+
         Ok(())
     }
 
@@ -181,7 +181,7 @@ impl Machine {
         let high = self.read_byte_silent(address.wrapping_add(1)) as u16;
         (high << 8) | low
     }
-    
+
     pub fn read_pair_paged(&mut self, address: u16) -> u16 {
         let low = self.read_byte(address) as u16;
         // Address increment must not affect page number
@@ -236,7 +236,7 @@ impl Machine {
     }
 
     pub fn tick(&mut self) {
-        self.ppu.tick();
+        self.ppu.tick(self.cartridge_slot.as_ref());
         self.cpu.tick();
 
         if let Some(instruction) = self.cpu.pending_instruction {
@@ -269,13 +269,13 @@ impl Machine {
             self.handle_nmi();
         }
     }
-    
+
     fn tick_oam_dma(&mut self) {
         // Perform a get/put at the beginning of each CPU cycle
         if self.cpu.cycle_tick_count != 0 {
             return;
         }
-        
+
         if self.cpu.is_put_cycle {
             if let Some(value) = self.cpu.oam_dma_fetch.take() {
                 self.ppu.write_oam_data(value);

@@ -296,12 +296,10 @@ pub fn main() {
             }
         }
         else if command.eq_ignore_ascii_case("Play") {
-            let mut buffer = vec![0_u32; 256 * 240];
-            let mut base_nametable_address = 0x2000;
-            
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;
-            let mut window = Window::new("NES", 256, 240, window_options).unwrap();
+            let mut window = Window::new("NES", ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
+            window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             window.set_target_fps(60);
             
             while window.is_open() {
@@ -310,33 +308,22 @@ pub fn main() {
                     match key {
                         Key::K => machine.controller_1[BUTTON_A] = true,
                         Key::J => machine.controller_1[BUTTON_B] = true,
-                        Key::V => machine.controller_1[BUTTON_SELECT] = true,
-                        Key::B => machine.controller_1[BUTTON_START] = true,
+                        Key::Tab => machine.controller_1[BUTTON_SELECT] = true,
+                        Key::Space => machine.controller_1[BUTTON_START] = true,
                         Key::W => machine.controller_1[BUTTON_UP] = true,
                         Key::S => machine.controller_1[BUTTON_DOWN] = true,
                         Key::A => machine.controller_1[BUTTON_LEFT] = true,
                         Key::D => machine.controller_1[BUTTON_RIGHT] = true,
-                        Key::Key1 => base_nametable_address = 0x2000,
-                        Key::Key2 => base_nametable_address = 0x2400,
-                        Key::Key3 => base_nametable_address = 0x2800,
-                        Key::Key4 => base_nametable_address = 0x2C00,
                         _ => {}
                     }
                 }
                 
-                machine.tick();
-                while !machine.ppu.is_at_top_left() {
+                while !machine.ppu.is_entering_vblank() {
                     machine.tick();
                 }
-                for (pos, sliver) in buffer.chunks_exact_mut(8).enumerate() {
-                    let x = ((pos as u8) & 0b11111) << 3;
-                    let y = (pos >> 5) as u8;
-                    let computed_sliver = machine.ppu.get_tile_sliver(base_nametable_address, x, y, &machine.cartridge_slot.as_ref().unwrap())
-                        .map(|index| machine.ppu.get_color_rgb(index));
-                    sliver.copy_from_slice(&computed_sliver);
-                }
+                machine.tick();
                 
-                window.update_with_buffer(&buffer, 256, 240).unwrap();
+                window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             }
         }
         else {
