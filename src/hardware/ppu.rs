@@ -14,12 +14,16 @@ pub const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
 pub const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
+pub const LAST_VISIBLE_SCANLINE: u16 = 239;
 pub const VBLANK_START_SCANLINE: u16 = 241;
-pub const PRE_RENDER_SCANLINE: u16 = 325; // 261; // FIXME: vblank should not need to be this long
+pub const PRE_RENDER_SCANLINE: u16 = 389; // 261; // FIXME: vblank should not need to be this long
 pub const LAST_DOT: u16 = 341;
+const NORMAL_COLOR_MASK: u16 = 0b111111;
+const GREYSCALE_COLOR_MASK: u16 = 0b110000;
 const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
-const OAM_SIZE: usize = 0x100;
+const SECONDARY_OAM_SIZE: u8 = 32;
+const OAM_BYTE_2_MASK: u8 = 0b11100011;
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -29,12 +33,12 @@ pub struct PictureProcessingUnit {
     tall_sprites: bool,
     vblank_nmi_enabled: bool,
     // PPU_MASK
-    greyscale: bool,
     mask_background: bool,
     mask_sprites: bool,
     show_background: bool,
     show_sprites: bool,
     color_emphasis: u16,
+    color_mask: u16,
     // PPU_STATUS
     vblank_flag: bool,
     next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
@@ -58,7 +62,12 @@ pub struct PictureProcessingUnit {
     vblank_nmi_triggered: bool, // true if actively pulling /NMI low
     sliver_shifter: [u8; 16], // epic variable name
     pub palette_ram: [u8; 32],
-    primary_oam: Box<[u8; OAM_SIZE]>,
+    primary_oam: Box<[u8; 0x100]>,
+    secondary_oam_address: u8,
+    secondary_oam: [u8; SECONDARY_OAM_SIZE as usize],
+    sprite_evaluation_finished: bool,
+    sprite_0_in_range: bool,
+    sprite_output_buffer: Box<[u8; SCREEN_WIDTH]>,
     pub color_converter: ColorConverter,
     pub screen_buffer: Box<[u32; SCREEN_WIDTH * SCREEN_HEIGHT]>,
 }
@@ -71,12 +80,12 @@ impl PictureProcessingUnit {
             background_ptable_address: 0,
             tall_sprites: false,
             vblank_nmi_enabled: false,
-            greyscale: false,
             mask_background: false,
             mask_sprites: false,
             show_background: false,
             show_sprites: false,
             color_emphasis: 0,
+            color_mask: NORMAL_COLOR_MASK,
             vblank_flag: false,
             next_vblank_flag: false,
             sprite_0_hit: false,
@@ -94,7 +103,12 @@ impl PictureProcessingUnit {
             vblank_nmi_triggered: false,
             sliver_shifter: [0; 16],
             palette_ram: [0; 32],
-            primary_oam: Box::new([0; OAM_SIZE]),
+            primary_oam: Box::new([0; 0x100]),
+            secondary_oam_address: 0,
+            secondary_oam: [0; SECONDARY_OAM_SIZE as usize],
+            sprite_evaluation_finished: false,
+            sprite_0_in_range: false,
+            sprite_output_buffer: Box::new([0; SCREEN_WIDTH]),
             color_converter: ColorConverter::new(),
             screen_buffer: Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT]),
         }
@@ -108,12 +122,12 @@ impl PictureProcessingUnit {
         self.background_ptable_address = 0;
         self.tall_sprites = false;
         self.vblank_nmi_enabled = false;
-        self.greyscale = false;
         self.mask_background = false;
         self.mask_sprites = false;
         self.show_background = false;
         self.show_sprites = false;
         self.color_emphasis = 0;
+        self.color_mask = NORMAL_COLOR_MASK;
         self.fine_scroll_x = 0;
         self.origin_vram_address = 0;
         self.vram_read_buffer = 0;
@@ -144,7 +158,7 @@ impl PictureProcessingUnit {
             return;
         }
 
-        self.greyscale = value & 0b1 != 0;
+        self.color_mask = if value & 0b1 != 0 { GREYSCALE_COLOR_MASK } else { NORMAL_COLOR_MASK };
         self.mask_background = value & 0b10 != 0;
         self.mask_sprites = value & 0b100 != 0;
         self.show_background = value & 0b1000 != 0;
@@ -166,8 +180,22 @@ impl PictureProcessingUnit {
     }
 
     pub fn read_oam_data(&mut self) -> u8 {
-        // Unlike PPU_VRAM_DATA, the address is not incremented after reading
-        self.primary_oam[self.oam_address as usize]
+        let mut value;
+        if self.scanline <= LAST_VISIBLE_SCANLINE && self.dot >= 1 && self.dot <= 64 {
+            // Secondary OAM is being cleared to $FF by latching all reads from primary OAM to $FF
+            value = 0xFF;
+        }
+        else {
+            // Unlike PPU_VRAM_DATA, the address is not incremented after reading
+            value = self.primary_oam[self.oam_address as usize];
+        }
+
+        if self.oam_address & 0b11 == 0b10 {
+            // Bits 4:2 of each byte 2 in OAM aren't really supposed to exist and always read 0
+            value &= OAM_BYTE_2_MASK;
+        }
+
+        value
     }
 
     pub fn write_oam_data(&mut self, value: u8) {
@@ -258,9 +286,26 @@ impl PictureProcessingUnit {
         self.scanline == VBLANK_START_SCANLINE && self.dot == 0
     }
 
+    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &Cartridge) -> [u8; 8] {
+        // yyy NN YYYYY XXXXX
+        let vram_address = (base_nametable_address & 0b11_00000_00000) // Nametable select
+            | (y as u16) >> 3 << 5 // Coarse Y
+            | ((y as u16) & 0b111) << 12 // Fine Y
+            | (x as u16) >> 3; // Coarse X
+
+        let mut sliver = [0; 8];
+        self.compute_background_sliver(&mut sliver, vram_address, cartridge);
+        sliver
+    }
+
+    pub fn get_color_rgb(&self, index: u8) -> u32 {
+        self.color_converter.get_rgb(self.color_emphasis | (index as u16 & self.color_mask))
+    }
+
     pub fn tick(&mut self, cartridge: Option<&Cartridge>) {
         self.vblank_flag = self.next_vblank_flag;
 
+        // Update VRAM address and flags if necessary
         match (self.scanline, self.dot) {
             (VBLANK_START_SCANLINE, 0) => {
                 self.next_vblank_flag = true;
@@ -278,9 +323,9 @@ impl PictureProcessingUnit {
             }
             // FIXME: why does super mario bros keep writing vram until >50 SCANLINES PAST VBLANK.
             (0 ..= 239 | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
-                self.draw_shifted_sliver();
-                self.increment_coarse_x();
+                self.draw_sliver();
                 self.load_next_sliver(cartridge);
+                self.increment_coarse_x();
                 if self.dot == 256 {
                     self.increment_fine_y();
                 }
@@ -289,18 +334,83 @@ impl PictureProcessingUnit {
                 self.reset_coarse_x();
             }
             (0 ..= 239 | PRE_RENDER_SCANLINE, 328 | 336) => {
-                self.increment_coarse_x();
                 self.load_next_sliver(cartridge);
+                self.increment_coarse_x();
             }
             (PRE_RENDER_SCANLINE, 280 ..= 304) => {
                 self.reset_fine_y();
             }
             _ => {}
         }
-
-        if self.scanline == self.primary_oam[0] as u16 && self.dot == self.primary_oam[3] as u16 {
-            // FIXME: not the correct implementation, integrate with future sprite logic
-            self.sprite_0_hit = true;
+        
+        if self.scanline <= LAST_VISIBLE_SCANLINE {
+            match self.dot {
+                1 => {
+                    // Clear secondary OAM
+                    // This technically happens gradually between 1 ..= 64, but whatever
+                    self.secondary_oam.fill(0xFF);
+                    self.secondary_oam_address = 0;
+                    self.oam_address = 0;
+                    self.sprite_evaluation_finished = false;
+                    self.sprite_0_in_range = false;
+                }
+                // TODO: this is awful
+                65 ..= 256 if self.dot & 1 != 0 => {
+                    // Perform sprite evaluation (reading from primary OAM in realtime, as the CPU
+                    // can mess with that; writing to secondary OAM can happen simultaneously)
+                    if self.sprite_evaluation_finished {
+                        self.oam_address = self.oam_address.wrapping_add(4);
+                    }
+                    else if self.secondary_oam_address & 0b11 == 0 {
+                        // Check if the current sprite is present on this scanline
+                        let start_y = self.primary_oam[self.oam_address as usize] as u16;
+                        let end_y = start_y + if self.tall_sprites { 16 } else { 8 };
+                        if self.scanline >= start_y && self.scanline < end_y {
+                            // Sprite is in range
+                            if self.secondary_oam_address == SECONDARY_OAM_SIZE {
+                                // Theoretically found a 9th sprite which triggers overflow
+                                // (though, with the hardware bug, probably wrong)
+                                self.sprite_overflow = true;
+                                self.secondary_oam_address += 1; // Stop sprite range-checking
+                            }
+                            else {
+                                if self.oam_address == 0 {
+                                    self.sprite_0_in_range = true;
+                                }
+                                self.secondary_oam[self.secondary_oam_address as usize] = start_y as u8;
+                                self.secondary_oam_address += 1;
+                                self.oam_address = self.oam_address.wrapping_add(1);
+                            }
+                        }
+                        else {
+                            // Sprite is not in range
+                            if self.secondary_oam_address == SECONDARY_OAM_SIZE {
+                                // Perform the double-increment hardware bug (yippee!)
+                                let increment_amount = if self.oam_address & 0b11 == 0b11 { 1 } else { 5 };
+                                (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(increment_amount);
+                            }
+                            else {
+                                (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(4);
+                            }
+                        }
+                    }
+                    else if self.secondary_oam_address < SECONDARY_OAM_SIZE {
+                        // Transfer a byte from primary OAM to secondary OAM
+                        let oam_byte = self.primary_oam[self.oam_address as usize];
+                        self.secondary_oam[self.secondary_oam_address as usize] = oam_byte;
+                        self.secondary_oam_address += 1;
+                        (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(1);
+                    }
+                }
+                257 => {
+                    // Screw sprite output units, let's just load a buffer since it's basically
+                    // invisible behavior to the CPU anyway
+                    if let Some(cartridge) = cartridge {
+                        self.load_sprite_output_buffer(self.scanline as u8, cartridge);
+                    }
+                }
+                _ => {}
+            }
         }
 
         if self.dot < LAST_DOT {
@@ -316,14 +426,14 @@ impl PictureProcessingUnit {
             }
         }
     }
-    
+
     fn reset_coarse_x(&mut self) {
         // Retain the bits related to vertical position
         self.vram_address &= VERTICAL_BITS;
         // Copy coarse X and horizontal nametable bit from the origin VRAM address
         self.vram_address |= self.origin_vram_address & HORIZONTAL_BITS;
     }
-    
+
     fn reset_fine_y(&mut self) {
         // Retain the bits related to horizontal position
         self.vram_address &= HORIZONTAL_BITS;
@@ -372,46 +482,81 @@ impl PictureProcessingUnit {
             self.vram_address = self.vram_address.wrapping_add(0b001_00_00000_00000);
         }
     }
-    
+
     fn load_next_sliver(&mut self, cartridge: Option<&Cartridge>) {
         // Make room for the next sliver to be stored by shifting the right sliver to the left
         self.sliver_shifter.copy_within(8.., 0);
         // Compute sliver color indices
-        let sliver = match cartridge {
-            Some(cartridge) => self.compute_sliver(self.vram_address, cartridge),
-            None => [0; 8],
-        };
-        self.sliver_shifter[8..].copy_from_slice(&sliver);
+        if let Some(cartridge) = cartridge {
+            let mut sliver = [0; 8];
+            if self.show_background {
+                self.compute_background_sliver(&mut sliver, self.vram_address, cartridge);
+            }
+            self.sliver_shifter[8..].copy_from_slice(&sliver);
+        }
+        else {
+            self.sliver_shifter[8..].fill(0);
+        }
     }
 
-    fn draw_shifted_sliver(&mut self) {
+    fn draw_sliver(&mut self) {
         // Make sure we are on a render scanline (dot is guaranteed to be valid unless there is a
         // logic error in the tick() method)
         if self.scanline as usize >= SCREEN_HEIGHT {
             return;
         }
-        
+
         // The current dot is at the pixel immediately after the sliver being drawn, hence minus 8
-        let base_pixel_index = self.scanline as usize * SCREEN_WIDTH + self.dot as usize - 8;
+        let base_pixel_x = self.dot as usize - 8;
+        let base_pixel_index = self.scanline as usize * SCREEN_WIDTH + base_pixel_x;
         let shift_amount = self.fine_scroll_x as usize;
-        for offset in 0 .. 8 {
-            let color_index = self.sliver_shifter[shift_amount + offset];
-            self.screen_buffer[base_pixel_index + offset] = self.get_color_rgb(color_index);
+        for offset_x in 0 .. 8 {
+            // Retrieve background pixel
+            let mut color_index = self.sliver_shifter[shift_amount + offset_x];
+
+            // Possibly modify pixel based on sprite output
+            let buffer_value = self.sprite_output_buffer[base_pixel_x + offset_x];
+            if buffer_value != 0 {
+                // These flags are made up but we kinda need them in order to do it this way
+                let behind_background = buffer_value & 0b10000000 != 0;
+                let is_sprite_0 = buffer_value & 0b1000000 != 0;
+                let sprite_color_index = buffer_value & 0b11111;
+
+                if color_index == 0 {
+                    // Background is transparent, so sprite pixel will always be used
+                    color_index = sprite_color_index;
+                }
+                else {
+                    // Check for sprite 0 hit (happens if opaque pixel of sprite 0 is being compared
+                    // with opaque pixel of background)
+                    if is_sprite_0 {
+                        self.sprite_0_hit = true;
+                    }
+                    // Overwrite background pixel unless the "behind background" flag is set
+                    if !behind_background {
+                        color_index = sprite_color_index;
+                    }
+                }
+            }
+
+            // Compute sRGB pixel color based on palette data and the color converter
+            let palette_index = self.palette_ram[color_index as usize];
+            self.screen_buffer[base_pixel_index + offset_x] = self.get_color_rgb(palette_index);
         }
     }
-    
-    fn compute_sliver(&self, vram_address: u16, cartridge: &Cartridge) -> [u8; 8] {
+
+    fn compute_background_sliver(&self, sliver: &mut [u8], vram_address: u16, cartridge: &Cartridge) {
         // 10 NN YYYYY XXXXX
         let tile_address = NAMETABLES_START_ADDRESS | (vram_address & 0b11_11111_11111);
         // yyy
         let fine_y = (vram_address >> 12) & 0b111;
 
-        let pattern_number = cartridge.read_ppu_byte(tile_address);
-        // .. PPPPPPPP 0 000
-        let pattern_address = self.background_ptable_address | (pattern_number as u16) << 4;
-        // .. PPPPPPPP 0 yyy
+        let pattern_number = cartridge.read_ppu_byte(tile_address) as u16;
+        // 0_ PPPPPPPP 0 000
+        let pattern_address = self.background_ptable_address | pattern_number << 4;
+        // 0_ PPPPPPPP 0 yyy
         let plane_0_row_address = pattern_address | fine_y;
-        // .. PPPPPPPP 1 yyy
+        // 0_ PPPPPPPP 1 yyy
         let plane_1_row_address = plane_0_row_address | 0b1000;
         let plane_0_row = cartridge.read_ppu_byte(plane_0_row_address);
         let plane_1_row = cartridge.read_ppu_byte(plane_1_row_address);
@@ -427,33 +572,90 @@ impl PictureProcessingUnit {
         // 0 pp 00
         let palette_base = ((attribute_byte >> attribute_bit) & 0b11) << 2;
 
-        let mut sliver = [0; 8];
-        for offset in 0 .. sliver.len() {
-            let color_bit_0 = (plane_0_row >> (7 - offset)) & 1;
-            let color_bit_1 = (plane_1_row >> (7 - offset)) & 1;
+        for offset_x in 0 .. sliver.len() {
+            let color_bit_0 = (plane_0_row >> (7 - offset_x)) & 1;
+            let color_bit_1 = (plane_1_row >> (7 - offset_x)) & 1;
             if color_bit_0 == 0 && color_bit_1 == 0 {
-                sliver[offset] = self.palette_ram[0];
+                sliver[offset_x] = 0;
             }
             else {
                 // 0 pp cc
-                let color_index = palette_base | color_bit_1 << 1 | color_bit_0;
-                sliver[offset] = self.palette_ram[color_index as usize];
+                sliver[offset_x] = palette_base | color_bit_1 << 1 | color_bit_0;
             }
         }
-        sliver
     }
 
-    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &Cartridge) -> [u8; 8] {
-        // yyy NN YYYYY XXXXX
-        let vram_address = (base_nametable_address & 0b11_00000_00000) // Nametable select
-            | (y as u16) >> 3 << 5 // Coarse Y
-            | ((y as u16) & 0b111) << 12 // Fine Y
-            | (x as u16) >> 3; // Coarse X
-        
-        self.compute_sliver(vram_address, cartridge)
-    }
+    fn load_sprite_output_buffer(&mut self, y: u8, cartridge: &Cartridge) {
+        // Clear the buffer first
+        self.sprite_output_buffer.fill(0);
 
-    pub fn get_color_rgb(&self, index: u8) -> u32 {
-        self.color_converter.get_rgb(self.color_emphasis | (index & 0b111111) as u16)
+        for (sprite_index, sprite_data) in self.secondary_oam.chunks_exact(4).enumerate() {
+            // Process byte 2 first since we need to know about flipping early on
+            let attributes = sprite_data[2];
+            let palette_base = 0b10000 | (attributes & 0b11) << 2;
+            // Not realistic to hardware, but useful with this hacky approach. Tracks which pixels
+            // belong to sprite 0 as well as whether the background should take precedence
+            // Bit 7 = behind background?
+            // Bit 6 = sprite 0?
+            let is_sprite_0 = self.sprite_0_in_range && sprite_index == 0;
+            let rendering_flags = (attributes & 0b100000) << 2 | (is_sprite_0 as u8) << 6;
+            let flip_x = attributes & 0b1000000 != 0;
+            let flip_y = attributes & 0b10000000 != 0;
+
+            let top_y = sprite_data[0];
+            if top_y >= 0xEF {
+                // This sprite is offscreen (probably an empty sprite slot)
+                continue;
+            }
+            let mut y_offset = y - top_y;
+            if flip_y {
+                y_offset = if self.tall_sprites { 15 - y_offset } else { 7 - y_offset };
+            }
+
+            let pattern_number = sprite_data[1] as u16;
+            let pattern_address;
+            if self.tall_sprites {
+                let ptable_address = (pattern_number & 1) << 12;
+                if y_offset >= 8 {
+                    pattern_address = ptable_address | (pattern_number | 1) << 4;
+                }
+                else {
+                    pattern_address = ptable_address | (pattern_number & !1) << 4;
+                }
+            }
+            else {
+                pattern_address = self.sprite_ptable_address | pattern_number << 4;
+            }
+            // 0_ PPPPPPPP 0 yyy
+            let plane_0_row_address = pattern_address | (y_offset & 0b111) as u16;
+            // 0_ PPPPPPPP 1 yyy
+            let plane_1_row_address = plane_0_row_address | 0b1000;
+            let plane_0_row = cartridge.read_ppu_byte(plane_0_row_address);
+            let plane_1_row = cartridge.read_ppu_byte(plane_1_row_address);
+
+            let left_x = sprite_data[3];
+
+            for x_offset in 0 .. 8 {
+                let (x, offscreen) = left_x.overflowing_add(x_offset);
+                if offscreen {
+                    break;
+                }
+                else if self.sprite_output_buffer[x as usize] != 0 {
+                    // Get out-prioritied lol
+                    continue;
+                }
+                
+                let shift_amount = if flip_x { x_offset } else { 7 - x_offset };
+                let color_bit_0 = (plane_0_row >> shift_amount) & 1;
+                let color_bit_1 = (plane_1_row >> shift_amount) & 1;
+                if color_bit_0 != 0 || color_bit_1 != 0 {
+                    // BZ0 1 pp cc
+                    self.sprite_output_buffer[x as usize] = rendering_flags
+                        | palette_base
+                        | color_bit_1 << 1
+                        | color_bit_0;
+                }
+            }
+        }
     }
 }
