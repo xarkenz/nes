@@ -47,6 +47,15 @@ impl CentralProcessingUnit {
             pending_instruction: None,
         }
     }
+    
+    pub fn reset(&mut self) {
+        // Resetting PC is handled elsewhere
+        self.interrupt_disable_flag = true;
+        self.stack_pointer = self.stack_pointer.wrapping_sub(3);
+        self.oam_dma_active = false;
+        self.ticks_available = 0;
+        self.pending_instruction = None;
+    }
 
     pub fn get_status_byte(&self, break_flag: bool) -> u8 {
         0b00100000 // Bit 5 is always set
@@ -75,6 +84,7 @@ impl CentralProcessingUnit {
 
     pub fn start_oam_dma(&mut self, page: u8) {
         self.oam_dma_active = true;
+        self.oam_dma_fetch = None;
         self.oam_dma_address = (page as u16) << 8;
     }
 

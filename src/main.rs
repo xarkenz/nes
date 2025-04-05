@@ -71,7 +71,7 @@ pub fn main() {
         if command.is_empty() {
             continue;
         }
-        else if command.eq_ignore_ascii_case("Quit") {
+        else if command.eq_ignore_ascii_case("Quit") || command.eq_ignore_ascii_case("Exit") {
             break;
         }
         else if command.eq_ignore_ascii_case("Load") {
@@ -83,7 +83,7 @@ pub fn main() {
                 }
             };
 
-            let cartridge = match Cartridge::parse_ines(&mut file) {
+            let cartridge = match Cartridge::parse_nes(&mut file) {
                 Ok(file) => file,
                 Err(error) => {
                     eprintln!("Error: Failed to parse file: {error}");
@@ -93,10 +93,12 @@ pub fn main() {
 
             machine.cartridge_slot = Some(cartridge);
             println!("Successfully loaded cartridge.");
+            machine.reset();
+            println!("Console reset.");
         }
         else if command.eq_ignore_ascii_case("Reset") {
             machine.reset();
-            println!("Successfully reset.");
+            println!("Console reset.");
         }
         else if command.eq_ignore_ascii_case("Step") {
             let opcode = machine.read_byte_silent(machine.cpu.program_counter);
@@ -217,6 +219,12 @@ pub fn main() {
             println!("Debug disassembly is now active.");
         }
         else if command.eq_ignore_ascii_case("EndDis") {
+            if argument.is_empty() {
+                machine.cancel_debug_disassembly();
+                println!("Debug disassembly canceled.");
+                continue;
+            }
+            
             let mut file = match std::fs::File::create(argument) {
                 Ok(file) => file,
                 Err(error) => {

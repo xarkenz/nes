@@ -8,6 +8,7 @@ use crate::loader::Cartridge;
 pub mod instructions;
 pub mod ppu;
 pub mod cpu;
+pub mod map;
 
 pub const OPEN_BUS: u8 = 0x00; // Can be any byte value
 pub const STACK_PAGE: u16 = 0x0100;
@@ -59,6 +60,10 @@ impl Machine {
     pub fn start_debug_disassembly(&mut self) {
         self.debug_disassembly = Some(BTreeMap::new());
     }
+    
+    pub fn cancel_debug_disassembly(&mut self) {
+        self.debug_disassembly = None;
+    }
 
     pub fn end_debug_disassembly(&mut self, writer: &mut impl Write) -> Result<(), String> {
         let Some(disassembly) = self.debug_disassembly.take() else {
@@ -79,8 +84,9 @@ impl Machine {
     }
 
     pub fn reset(&mut self) {
-        self.cpu.program_counter = self.read_pair(RESET_VECTOR);
+        self.cpu.reset();
         self.ppu.reset();
+        self.cpu.program_counter = self.read_pair(RESET_VECTOR);
     }
 
     pub fn read_byte(&mut self, address: u16) -> u8 {

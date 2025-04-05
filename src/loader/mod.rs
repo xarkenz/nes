@@ -1,115 +1,121 @@
 use std::io::Read;
+use crate::hardware::map::*;
 use crate::hardware::ppu::PPU_COLOR_COUNT;
 
-const PRG_BANK_SIZE: usize = 0x4000;
-const CHR_BANK_SIZE: usize = 0x2000;
-const NAMETABLE_SIZE: usize = 0x0400;
+const NES_HEADER_SIZE: usize = 16;
+const TRAINER_SIZE: usize = 0x0200;
+
+#[derive(Copy, Clone, Debug)]
+pub enum NESFileVersion {
+    Version1,
+    Version2,
+}
+
+#[derive(Clone, Debug)]
+pub struct NESFileHeader {
+    pub version: NESFileVersion,
+    pub mapper_number: usize,
+    pub submapper_number: usize,
+    pub nametable_mirroring: NametableMirroring,
+    pub uses_custom_nametables: bool,
+    pub has_backup_battery: bool,
+    pub has_trainer: bool,
+    pub prg_rom_chunks: usize,
+    pub chr_rom_chunks: usize,
+    pub prg_ram_size: usize,
+    pub chr_ram_size: usize,
+}
 
 pub struct Cartridge {
-    pub mapper_number: u8,
-    pub nametable_arrangement: bool, // false: horizontal mirroring, true: vertical mirroring
-    pub uses_alt_nametable_layout: bool,
-    pub has_battery: bool,
-    pub prg_rom: Vec<Box<[u8; PRG_BANK_SIZE]>>,
-    pub chr_rom: Vec<Box<[u8; CHR_BANK_SIZE]>>,
-    nametables: [Box<[u8; NAMETABLE_SIZE]>; 2],
-    prg_bank_2_index: usize,
+    header: NESFileHeader,
+    mapper: Box<dyn Mapper>,
+    trainer: Option<Box<[u8; TRAINER_SIZE]>>,
 }
 
 impl Cartridge {
-    pub fn parse_ines(reader: &mut impl Read) -> Result<Self, String> {
-        let mut header = [0_u8; 16];
-        reader.read_exact(&mut header).map_err(|err| err.to_string())?;
+    pub fn parse_nes(reader: &mut impl Read) -> Result<Self, String> {
+        let mut header_data = [0_u8; NES_HEADER_SIZE];
+        reader.read_exact(&mut header_data).map_err(|err| err.to_string())?;
 
-        if &header[0 ..= 3] != b"NES\x1A" {
-            return Err("iNES file format error.".to_string());
+        if &header_data[0 .. 4] != b"NES\x1A" {
+            return Err("NES file format error.".to_string());
         }
 
-        let prg_rom_banks = header[4] as usize;
-        let chr_rom_banks = header[5] as usize;
-        if prg_rom_banks > 16 || chr_rom_banks > 32 {
-            return Err("ROM size limit exceeded.".to_string());
-        }
-
-        let mapper_number = header[6] >> 4;
-        if mapper_number != 0 {
-            return Err(format!("Unsupported mapper: {mapper_number}."));
-        }
-
-        let mut cartridge = Cartridge {
-            mapper_number,
-            nametable_arrangement: header[6] & 0x01 != 0,
-            uses_alt_nametable_layout: header[6] & 0x08 != 0,
-            has_battery: header[6] & 0x02 != 0,
-            prg_rom: Vec::with_capacity(prg_rom_banks),
-            chr_rom: Vec::with_capacity(chr_rom_banks),
-            nametables: [Box::new([0; NAMETABLE_SIZE]), Box::new([0; NAMETABLE_SIZE])],
-            prg_bank_2_index: prg_rom_banks - 1,
+        let header = NESFileHeader {
+            version: match header_data[7] & 0b00001100 {
+                0b00001000 => NESFileVersion::Version2,
+                _ => NESFileVersion::Version1
+            },
+            mapper_number: (header_data[6] >> 4) as usize,
+            submapper_number: 0,
+            nametable_mirroring: if header_data[6] & 0b00000001 != 0 {
+                NametableMirroring::Horizontal
+            } else {
+                NametableMirroring::Vertical
+            },
+            uses_custom_nametables: header_data[6] & 0b00001000 != 0,
+            has_backup_battery: header_data[6] & 0b00000010 != 0,
+            has_trainer: header_data[6] & 0b00000100 != 0,
+            prg_rom_chunks: header_data[4] as usize,
+            chr_rom_chunks: header_data[5] as usize,
+            prg_ram_size: 0,
+            chr_ram_size: 0,
         };
 
-        for bank in 0 .. prg_rom_banks {
-            cartridge.prg_rom.push(Box::new([0; PRG_BANK_SIZE]));
-            reader.read_exact(cartridge.prg_rom[bank].as_mut_slice()).map_err(|err| err.to_string())?;
-        }
-        for bank in 0 .. chr_rom_banks {
-            cartridge.chr_rom.push(Box::new([0; CHR_BANK_SIZE]));
-            reader.read_exact(cartridge.chr_rom[bank].as_mut_slice()).map_err(|err| err.to_string())?;
+        let trainer = header.has_trainer
+            .then(|| {
+                let mut trainer = Box::new([0; TRAINER_SIZE]);
+                reader.read_exact(trainer.as_mut_slice()).map_err(|err| err.to_string())?;
+                Ok(trainer)
+            })
+            // Icky code to turn Option<Result> into Result<Option>
+            .map_or(Ok(None), |result: Result<_, String>| result.map(Some))?;
+
+        let mut prg_rom = Vec::with_capacity(header.prg_rom_chunks);
+        for chunk in 0 .. header.prg_rom_chunks {
+            prg_rom.push(Box::new([0; PRG_CHUNK_SIZE]));
+            reader.read_exact(prg_rom[chunk].as_mut_slice()).map_err(|err| err.to_string())?;
         }
 
-        Ok(cartridge)
+        let mut chr_rom = Vec::with_capacity(header.chr_rom_chunks);
+        for chunk in 0 .. header.chr_rom_chunks {
+            chr_rom.push(Box::new([0; CHR_CHUNK_SIZE]));
+            reader.read_exact(chr_rom[chunk].as_mut_slice()).map_err(|err| err.to_string())?;
+        }
+
+        let mapper = initialize_mapper(&header, prg_rom, chr_rom)?;
+
+        Ok(Self {
+            header,
+            mapper,
+            trainer,
+        })
+    }
+    
+    pub fn header(&self) -> &NESFileHeader {
+        &self.header
     }
 
     pub fn read_cpu_byte(&self, address: u16) -> u8 {
-        // Temporary, should be deferred to a polymorphic mapper object
-        match address {
-            0x8000 ..= 0xBFFF => {
-                self.prg_rom[0][(address & 0x3FFF) as usize]
+        if let Some(trainer) = &self.trainer {
+            if address >= 0x7000 && address < 0x7200 {
+                return trainer[(address & 0x1FF) as usize];
             }
-            0xC000 ..= 0xFFFF => {
-                self.prg_rom[self.prg_bank_2_index][(address & 0x3FFF) as usize]
-            }
-            _ => crate::hardware::OPEN_BUS
         }
+        
+        self.mapper.read_cpu_byte(address)
     }
 
-    pub fn write_cpu_byte(&mut self, _address: u16, _value: u8) {
-        // Temporary, should be deferred to a polymorphic mapper object
-        // For mapper 0, this is just a no-op since there's no PRG-RAM
+    pub fn write_cpu_byte(&mut self, address: u16, value: u8) {
+        self.mapper.write_cpu_byte(address, value)
     }
 
     pub fn read_ppu_byte(&self, address: u16) -> u8 {
-        // Temporary, should be deferred to a polymorphic mapper object
-        match address & 0x3FFF {
-            0x0000 ..= 0x1FFF => {
-                self.chr_rom[0][(address & 0x1FFF) as usize]
-            }
-            _ => {
-                let index = self.get_nametable_index(address);
-                self.nametables[index][(address & 0x03FF) as usize]
-            }
-        }
+        self.mapper.read_ppu_byte(address & 0x3FFF)
     }
 
     pub fn write_ppu_byte(&mut self, address: u16, value: u8) {
-        // Temporary, should be deferred to a polymorphic mapper object
-        match address & 0x3FFF {
-            0x0000 ..= 0x1FFF => {
-                // For mapper 0, this is just a no-op since there's no CHR-RAM
-            }
-            _ => {
-                let index = self.get_nametable_index(address);
-                self.nametables[index][(address & 0x03FF) as usize] = value;
-            }
-        }
-    }
-
-    fn get_nametable_index(&self, address: u16) -> usize {
-        if self.nametable_arrangement {
-            ((address >> 10) & 1) as usize
-        }
-        else {
-            ((address >> 11) & 1) as usize
-        }
+        self.mapper.write_ppu_byte(address & 0x3FFF, value)
     }
 }
 
