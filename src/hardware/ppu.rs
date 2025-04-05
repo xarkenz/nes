@@ -55,6 +55,7 @@ pub struct PictureProcessingUnit {
     vram_read_buffer: u8,
     // Internal
     resetting: bool,
+    rendering: bool,
     write_latch: bool,
     pub scanline: u16,
     pub dot: u16,
@@ -96,6 +97,7 @@ impl PictureProcessingUnit {
             vram_address: 0,
             vram_read_buffer: 0,
             resetting: false,
+            rendering: false,
             write_latch: false,
             scanline: 0,
             dot: 0,
@@ -131,6 +133,7 @@ impl PictureProcessingUnit {
         self.fine_scroll_x = 0;
         self.origin_vram_address = 0;
         self.vram_read_buffer = 0;
+        self.rendering = false;
         self.write_latch = false;
         self.scanline = 0;
         self.dot = 0;
@@ -163,6 +166,7 @@ impl PictureProcessingUnit {
         self.mask_sprites = value & 0b100 != 0;
         self.show_background = value & 0b1000 != 0;
         self.show_sprites = value & 0b10000 != 0;
+        self.rendering = self.show_background || self.show_sprites;
         self.color_emphasis = ((value & 0b11100000) as u16) << 1;
     }
 
@@ -321,7 +325,30 @@ impl PictureProcessingUnit {
                 self.sprite_overflow = false;
                 self.in_vblank = false;
             }
-            // FIXME: why does super mario bros keep writing vram until >50 SCANLINES PAST VBLANK.
+            _ => {}
+        }
+        
+        if self.rendering {
+            self.tick_rendering(cartridge);
+        }
+
+        if self.dot < LAST_DOT {
+            self.dot = self.dot.wrapping_add(1);
+        }
+        else {
+            self.dot = 0;
+            if self.scanline < PRE_RENDER_SCANLINE {
+                self.scanline = self.scanline.wrapping_add(1);
+            }
+            else {
+                self.scanline = 0;
+            }
+        }
+    }
+    
+    fn tick_rendering(&mut self, cartridge: Option<&Cartridge>) {
+        // Update VRAM address as necessary for tile fetches
+        match (self.scanline, self.dot) {
             (0 ..= 239 | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
                 self.draw_sliver();
                 self.load_next_sliver(cartridge);
@@ -342,7 +369,8 @@ impl PictureProcessingUnit {
             }
             _ => {}
         }
-        
+
+        // Handle sprite evaluation if on a visible scanline
         if self.scanline <= LAST_VISIBLE_SCANLINE {
             match self.dot {
                 1 => {
@@ -405,24 +433,13 @@ impl PictureProcessingUnit {
                 257 => {
                     // Screw sprite output units, let's just load a buffer since it's basically
                     // invisible behavior to the CPU anyway
+                    // Clear the buffer first
+                    self.sprite_output_buffer.fill(0);
                     if let Some(cartridge) = cartridge {
                         self.load_sprite_output_buffer(self.scanline as u8, cartridge);
                     }
                 }
                 _ => {}
-            }
-        }
-
-        if self.dot < LAST_DOT {
-            self.dot = self.dot.wrapping_add(1);
-        }
-        else {
-            self.dot = 0;
-            if self.scanline < PRE_RENDER_SCANLINE {
-                self.scanline = self.scanline.wrapping_add(1);
-            }
-            else {
-                self.scanline = 0;
             }
         }
     }
@@ -516,7 +533,7 @@ impl PictureProcessingUnit {
 
             // Possibly modify pixel based on sprite output
             let buffer_value = self.sprite_output_buffer[base_pixel_x + offset_x];
-            if buffer_value != 0 {
+            if self.show_sprites && buffer_value != 0 {
                 // These flags are made up but we kinda need them in order to do it this way
                 let behind_background = buffer_value & 0b10000000 != 0;
                 let is_sprite_0 = buffer_value & 0b1000000 != 0;
@@ -529,7 +546,7 @@ impl PictureProcessingUnit {
                 else {
                     // Check for sprite 0 hit (happens if opaque pixel of sprite 0 is being compared
                     // with opaque pixel of background)
-                    if is_sprite_0 {
+                    if is_sprite_0 && base_pixel_x >= 2 {
                         self.sprite_0_hit = true;
                     }
                     // Overwrite background pixel unless the "behind background" flag is set
@@ -586,9 +603,6 @@ impl PictureProcessingUnit {
     }
 
     fn load_sprite_output_buffer(&mut self, y: u8, cartridge: &Cartridge) {
-        // Clear the buffer first
-        self.sprite_output_buffer.fill(0);
-
         for (sprite_index, sprite_data) in self.secondary_oam.chunks_exact(4).enumerate() {
             // Process byte 2 first since we need to know about flipping early on
             let attributes = sprite_data[2];
