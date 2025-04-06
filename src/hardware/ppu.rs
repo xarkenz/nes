@@ -22,7 +22,7 @@ impl<const N: u16> DelayedFlag<N> {
         self.current_flag = flag;
         self.shifter |= (flag as u16) << N;
     }
-    
+
     pub fn get_delayed(&self) -> bool {
         self.shifter & 1 != 0
     }
@@ -277,7 +277,7 @@ impl PictureProcessingUnit {
         }
     }
 
-    pub fn read_vram_data(&mut self, cartridge: &Cartridge) -> u8 {
+    pub fn read_vram_data(&mut self, cartridge: &mut Cartridge) -> u8 {
         if self.resetting {
             return 0;
         }
@@ -323,7 +323,7 @@ impl PictureProcessingUnit {
         self.scanline == VBLANK_START_SCANLINE && self.dot == 0
     }
 
-    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &Cartridge) -> [u8; 8] {
+    pub fn get_tile_sliver(&self, base_nametable_address: u16, x: u8, y: u8, cartridge: &mut Cartridge) -> [u8; 8] {
         // yyy NN YYYYY XXXXX
         let vram_address = (base_nametable_address & 0b11_00000_00000) // Nametable select
             | (y as u16) >> 3 << 5 // Coarse Y
@@ -339,7 +339,7 @@ impl PictureProcessingUnit {
         self.color_converter.get_rgb(self.color_emphasis | (index as u16 & self.color_mask))
     }
 
-    pub fn tick(&mut self, cartridge: Option<&Cartridge>) {
+    pub fn tick(&mut self, cartridge: Option<&mut Cartridge>) {
         self.render_background_flag.tick();
         self.render_sprites_flag.tick();
         // Simulate hardware multiplexing to replicate quirky PPU_STATUS read behavior
@@ -347,7 +347,9 @@ impl PictureProcessingUnit {
 
         // Handle rendering if either background or sprites are enabled
         if self.render_background_flag.get_delayed() || self.render_sprites_flag.get_delayed() {
-            self.tick_rendering(cartridge);
+            if let Some(cartridge) = cartridge {
+                self.tick_rendering(cartridge);
+            }
         }
 
         // On certain cycles, update status flags and/or trigger NMI
@@ -401,8 +403,8 @@ impl PictureProcessingUnit {
             }
         }
     }
-    
-    fn tick_rendering(&mut self, cartridge: Option<&Cartridge>) {
+
+    fn tick_rendering(&mut self, cartridge: &mut Cartridge) {
         // Update VRAM address as necessary for tile fetches
         match (self.scanline, self.dot) {
             (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
@@ -485,12 +487,10 @@ impl PictureProcessingUnit {
                         (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(1);
                     }
                 }
-                257 => {
+                260 => {
                     // Screw sprite output units, let's just load a buffer since it's basically
                     // invisible behavior to the CPU anyway
-                    if let Some(cartridge) = cartridge {
-                        self.load_sprite_output_buffer(self.scanline as u8, cartridge);
-                    }
+                    self.load_sprite_output_buffer(self.scanline as u8, cartridge);
                 }
                 _ => {}
             }
@@ -553,20 +553,15 @@ impl PictureProcessingUnit {
         }
     }
 
-    fn load_next_sliver(&mut self, cartridge: Option<&Cartridge>) {
+    fn load_next_sliver(&mut self, cartridge: &mut Cartridge) {
         // Make room for the next sliver to be stored by shifting the right sliver to the left
         self.sliver_shifter.copy_within(8.., 0);
         // Compute sliver color indices
-        if let Some(cartridge) = cartridge {
-            let mut sliver = [0; 8];
-            if self.render_background_flag.get_delayed() {
-                self.compute_background_sliver(&mut sliver, self.vram_address, cartridge);
-            }
-            self.sliver_shifter[8..].copy_from_slice(&sliver);
+        let mut sliver = [0; 8];
+        if self.render_background_flag.get_delayed() {
+            self.compute_background_sliver(&mut sliver, self.vram_address, cartridge);
         }
-        else {
-            self.sliver_shifter[8..].fill(0);
-        }
+        self.sliver_shifter[8..].copy_from_slice(&sliver);
     }
 
     fn draw_sliver(&mut self) {
@@ -628,7 +623,7 @@ impl PictureProcessingUnit {
         }
     }
 
-    fn compute_background_sliver(&self, sliver: &mut [u8], vram_address: u16, cartridge: &Cartridge) {
+    fn compute_background_sliver(&self, sliver: &mut [u8], vram_address: u16, cartridge: &mut Cartridge) {
         // 10 NN YYYYY XXXXX
         let tile_address = NAMETABLES_START_ADDRESS | (vram_address & 0b11_11111_11111);
         // yyy
@@ -668,7 +663,7 @@ impl PictureProcessingUnit {
         }
     }
 
-    fn load_sprite_output_buffer(&mut self, y: u8, cartridge: &Cartridge) {
+    fn load_sprite_output_buffer(&mut self, y: u8, cartridge: &mut Cartridge) {
         // Clear the buffer first
         self.sprite_output_buffer.fill(0);
 
@@ -687,8 +682,20 @@ impl PictureProcessingUnit {
 
             let top_y = sprite_data[0];
             if top_y >= 0xEF {
-                // This sprite is offscreen (probably an empty sprite slot)
-                continue;
+                // This sprite slot is empty, which means there shouldn't be any more sprites on
+                // this scanline in theory
+                if sprite_index == 0 {
+                    // There are no sprites on this scanline at all...
+                    // Some cartridge mappers rely on getting a read with address bit 12 high to
+                    // count scanlines, so we'll just cheat a bit and do a garbage read
+                    if self.tall_sprites {
+                        cartridge.read_ppu_byte((sprite_data[1] as u16 & 1) << 12);
+                    }
+                    else {
+                        cartridge.read_ppu_byte(self.sprite_ptable_address);
+                    }
+                }
+                break;
             }
             let mut y_offset = y - top_y;
             if flip_y {

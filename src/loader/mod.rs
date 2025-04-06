@@ -48,7 +48,7 @@ impl Cartridge {
             },
             mapper_number: (header_data[6] >> 4) as usize,
             submapper_number: 0,
-            nametable_mirroring: if header_data[6] & 0b00000001 != 0 {
+            nametable_mirroring: if header_data[6] & 0b00000001 == 0 {
                 NametableMirroring::Horizontal
             } else {
                 NametableMirroring::Vertical
@@ -95,6 +95,14 @@ impl Cartridge {
     pub fn header(&self) -> &NESFileHeader {
         &self.header
     }
+    
+    pub fn tick(&mut self) {
+        self.mapper.tick();
+    }
+    
+    pub fn check_irq(&mut self) -> bool {
+        self.mapper.check_irq()
+    }
 
     pub fn read_cpu_byte(&self, address: u16) -> u8 {
         if let Some(trainer) = &self.trainer {
@@ -110,7 +118,7 @@ impl Cartridge {
         self.mapper.write_cpu_byte(address, value)
     }
 
-    pub fn read_ppu_byte(&self, address: u16) -> u8 {
+    pub fn read_ppu_byte(&mut self, address: u16) -> u8 {
         self.mapper.read_ppu_byte(address & 0x3FFF)
     }
 

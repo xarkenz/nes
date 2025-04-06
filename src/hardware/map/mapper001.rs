@@ -1,83 +1,6 @@
 use super::*;
 
-pub struct Mapper0 {
-    nametables: BuiltinNametables,
-    prg_chunk_0: PrgChunk,
-    prg_chunk_1: Option<PrgChunk>,
-    chr_chunk_0: ChrChunk,
-    chr_write_enable: bool,
-}
-
-impl Mapper0 {
-    pub fn new(mirroring: NametableMirroring, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
-        if prg_chunks.len() != 1 && prg_chunks.len() != 2 {
-            return Err(format!("Unexpected number of PRG-ROM chunks: {}.", prg_chunks.len()));
-        }
-        else if chr_chunks.len() > 1 {
-            return Err(format!("Unexpected number of CHR-ROM chunks: {}.", chr_chunks.len()));
-        }
-
-        let mut chr_write_enable = false;
-        if chr_chunks.is_empty() {
-            // Add CHR-RAM, I guess?
-            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
-            chr_write_enable = true;
-        }
-
-        let mut prg_chunks = prg_chunks.into_iter();
-        let mut chr_chunks = chr_chunks.into_iter();
-        Ok(Self {
-            nametables: BuiltinNametables::new(mirroring),
-            prg_chunk_0: prg_chunks.next().unwrap(),
-            prg_chunk_1: prg_chunks.next(),
-            chr_chunk_0: chr_chunks.next().unwrap(),
-            chr_write_enable,
-        })
-    }
-}
-
-impl Mapper for Mapper0 {
-    fn name(&self) -> &'static str {
-        "Mapper 0 (NROM)"
-    }
-
-    fn read_cpu_byte(&self, address: u16) -> u8 {
-        match address {
-            0x8000 ..= 0xBFFF => {
-                self.prg_chunk_0[(address & 0x3FFF) as usize]
-            }
-            0xC000 ..= 0xFFFF => match &self.prg_chunk_1 {
-                Some(prg_rom_bank_1) => prg_rom_bank_1[(address & 0x3FFF) as usize],
-                None => self.prg_chunk_0[(address & 0x3FFF) as usize],
-            }
-            _ => crate::hardware::OPEN_BUS
-        }
-    }
-
-    fn read_ppu_byte(&self, address: u16) -> u8 {
-        match address {
-            0x0000 ..= 0x1FFF => {
-                self.chr_chunk_0[address as usize]
-            }
-            _ => {
-                self.nametables.read_byte(address)
-            }
-        }
-    }
-
-    fn write_ppu_byte(&mut self, address: u16, value: u8) {
-        match address {
-            0x0000 ..= 0x1FFF => if self.chr_write_enable {
-                self.chr_chunk_0[address as usize] = value;
-            }
-            _ => {
-                self.nametables.write_byte(address, value)
-            }
-        }
-    }
-}
-
-pub struct Mapper1 {
+pub struct Mapper001 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
@@ -101,17 +24,17 @@ pub struct Mapper1 {
     chr_bank_1_base: usize,
 }
 
-impl Mapper1 {
+impl Mapper001 {
     const SHIFT_REGISTER_RESET: u8 = 0b10000;
     
-    pub fn new(mirroring: NametableMirroring, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
+    pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
         let mut chr_write_enable = false;
         if chr_chunks.is_empty() {
             // Add CHR-RAM, I guess?
             chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
             chr_write_enable = true;
         }
-        
+
         let mut prg_bank_mask = 0b1111;
         while prg_bank_mask as usize > prg_chunks.len() {
             prg_bank_mask >>= 1;
@@ -120,9 +43,9 @@ impl Mapper1 {
         while chr_bank_mask as usize > (chr_chunks.len() << 1) {
             chr_bank_mask >>= 1;
         }
-        
+
         let mut mapper = Self {
-            nametables: BuiltinNametables::new(mirroring),
+            nametables: BuiltinNametables::new(header.nametable_mirroring),
             prg_chunks,
             chr_chunks,
             shift_register: Self::SHIFT_REGISTER_RESET,
@@ -164,7 +87,7 @@ impl Mapper1 {
             self.prg_bank_0_chunk = (self.prg_bank_register & self.prg_bank_mask & !1) as usize;
             self.prg_bank_1_chunk = self.prg_bank_0_chunk + 1;
         }
-        
+
         if self.separate_chr_banks {
             let bank_0 = (self.chr_bank_0_register & self.chr_bank_mask) as usize;
             self.chr_bank_0_chunk = bank_0 >> 1;
@@ -182,9 +105,9 @@ impl Mapper1 {
     }
 }
 
-impl Mapper for Mapper1 {
+impl Mapper for Mapper001 {
     fn name(&self) -> &'static str {
-        "Mapper 1 (MMC1)"
+        "Mapper 001 (MMC1)"
     }
 
     fn tick(&mut self) {
@@ -205,7 +128,6 @@ impl Mapper for Mapper1 {
 
     fn write_cpu_byte(&mut self, address: u16, value: u8) {
         if self.ignore_serial_port_writes || address < 0x8000 {
-            // TODO: PRG-RAM?
             return;
         }
         else if value & 0b10000000 != 0 {
@@ -215,7 +137,7 @@ impl Mapper for Mapper1 {
             self.fix_last_prg_bank = true;
             return;
         }
-        
+
         let shift_register_full = self.shift_register & 1 != 0;
         self.shift_register >>= 1;
         self.shift_register |= (value & 1) << 4;
@@ -224,10 +146,10 @@ impl Mapper for Mapper1 {
             match address {
                 0x8000 ..= 0x9FFF => {
                     // Control
-                    self.nametables.mirroring = if self.shift_register & 0b00001 != 0 {
-                        NametableMirroring::Horizontal
-                    } else {
+                    self.nametables.mirroring = if self.shift_register & 0b00001 == 0 {
                         NametableMirroring::Vertical
+                    } else {
+                        NametableMirroring::Horizontal
                     };
                     self.use_nametable_mirroring = self.shift_register & 0b00010 != 0;
                     self.fix_last_prg_bank = self.shift_register & 0b00100 != 0;
@@ -256,7 +178,7 @@ impl Mapper for Mapper1 {
         self.ignore_serial_port_writes = true;
     }
 
-    fn read_ppu_byte(&self, address: u16) -> u8 {
+    fn read_ppu_byte(&mut self, address: u16) -> u8 {
         match address {
             0x0000 ..= 0x0FFF => {
                 let chunk_address = self.chr_bank_0_base + address as usize;

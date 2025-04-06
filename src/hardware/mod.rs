@@ -100,9 +100,11 @@ impl Machine {
             0x2000 ..= 0x3FFF => match address & 0x0007 {
                 PPU_STATUS => self.ppu.read_status(),
                 PPU_OAM_DATA => self.ppu.read_oam_data(),
-                PPU_VRAM_DATA => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge_slot {
                     self.ppu.read_vram_data(cartridge)
-                }),
+                } else {
+                    OPEN_BUS
+                }
                 _ => OPEN_BUS
             }
             CONTROLLER_1_REGISTER => {
@@ -237,6 +239,13 @@ impl Machine {
         (high as u16) << 8 | low as u16
     }
 
+    pub fn handle_irq(&mut self) {
+        self.stack_push_pair(self.cpu.program_counter);
+        self.stack_push_byte(self.cpu.get_status_byte(false));
+        self.cpu.interrupt_disable_flag = true;
+        self.cpu.program_counter = self.read_pair(IRQ_VECTOR);
+    }
+
     pub fn handle_nmi(&mut self) {
         self.cpu.pending_instruction = None;
         self.stack_push_pair(self.cpu.program_counter);
@@ -245,8 +254,11 @@ impl Machine {
     }
 
     pub fn tick(&mut self) {
-        self.ppu.tick(self.cartridge_slot.as_ref());
+        self.ppu.tick(self.cartridge_slot.as_mut());
         self.cpu.tick();
+        if let Some(cartridge) = &mut self.cartridge_slot {
+            cartridge.tick();
+        }
 
         if let Some(instruction) = self.cpu.pending_instruction {
             let ticks_needed = instruction.cycles_needed() * TICKS_PER_CPU_CYCLE;
@@ -266,16 +278,18 @@ impl Machine {
                 instruction.execute(self);
             }
         }
+        else if self.ppu.check_vblank_nmi() {
+            self.handle_nmi();
+        }
+        else if !self.cpu.interrupt_disable_flag && self.cartridge_slot.as_mut().is_some_and(Cartridge::check_irq) {
+            self.handle_irq();
+        }
         else if self.cpu.oam_dma_active {
             self.tick_oam_dma();
         }
         else {
             let opcode = self.read_byte(self.cpu.program_counter);
             self.cpu.pending_instruction = Some(Instruction::decode(opcode));
-        }
-
-        if self.cpu.cycle_tick_count == 0 && self.ppu.check_vblank_nmi() {
-            self.handle_nmi();
         }
     }
 

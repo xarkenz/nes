@@ -1,12 +1,19 @@
 use crate::loader::*;
 
-mod mappers_plane_0;
+mod mapper000;
+mod mapper001;
+mod mapper004;
 
 pub trait Mapper {
     fn name(&self) -> &'static str;
 
     fn tick(&mut self) {
         // No-op by default
+    }
+
+    fn check_irq(&mut self) -> bool {
+        // IRQ never fired by default
+        false
     }
 
     fn read_cpu_byte(&self, address: u16) -> u8;
@@ -16,7 +23,7 @@ pub trait Mapper {
         let _ = (address, value);
     }
 
-    fn read_ppu_byte(&self, address: u16) -> u8;
+    fn read_ppu_byte(&mut self, address: u16) -> u8;
 
     fn write_ppu_byte(&mut self, address: u16, value: u8) {
         // No-op by default
@@ -34,7 +41,9 @@ pub type Nametable = Box<[u8; NAMETABLE_SIZE]>;
 
 #[derive(Copy, Clone, Debug)]
 pub enum NametableMirroring {
+    /// PPU A11 -> CIRAM A10
     Horizontal,
+    /// PPU A10 -> CIRAM A10
     Vertical,
 }
 
@@ -66,8 +75,8 @@ impl BuiltinNametables {
 
     fn nametable_index(&self, address: u16) -> usize {
         match self.mirroring {
-            NametableMirroring::Horizontal => ((address >> 10) & 1) as usize,
-            NametableMirroring::Vertical => ((address >> 11) & 1) as usize,
+            NametableMirroring::Horizontal => ((address >> 11) & 1) as usize,
+            NametableMirroring::Vertical => ((address >> 10) & 1) as usize,
         }
     }
 }
@@ -78,8 +87,9 @@ pub fn initialize_mapper(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, chr_
     }
 
     match header.mapper_number {
-        000 => boxed(mappers_plane_0::Mapper0::new(header.nametable_mirroring, prg_chunks, chr_chunks)),
-        001 => boxed(mappers_plane_0::Mapper1::new(header.nametable_mirroring, prg_chunks, chr_chunks)),
-        number => Err(format!("Unsupported mapper number {number:03}."))
+        000 => boxed(mapper000::Mapper000::new(header, prg_chunks, chr_chunks)),
+        001 => boxed(mapper001::Mapper001::new(header, prg_chunks, chr_chunks)),
+        004 => boxed(mapper004::Mapper004::new(header, prg_chunks, chr_chunks)),
+        number => Err(format!("Unsupported mapper number: {number:03}."))
     }
 }

@@ -260,7 +260,7 @@ pub fn main() {
             println!();
         }
         else if command.eq_ignore_ascii_case("PTables") {
-            let Some(cartridge) = &machine.cartridge_slot else {
+            let Some(cartridge) = &mut machine.cartridge_slot else {
                 println!("Error: no cartridge loaded.");
                 continue;
             };
