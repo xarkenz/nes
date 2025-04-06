@@ -39,6 +39,7 @@ pub struct Machine {
     controller_1_button: usize,
     controller_2_button: usize,
     debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
+    cycle_counter: u64,
 }
 
 impl Machine {
@@ -54,6 +55,7 @@ impl Machine {
             controller_1_button: BUTTON_COUNT,
             controller_2_button: BUTTON_COUNT,
             debug_disassembly: None,
+            cycle_counter: 0,
         }
     }
 
@@ -87,6 +89,7 @@ impl Machine {
         self.cpu.reset();
         self.ppu.reset();
         self.cpu.program_counter = self.read_pair(RESET_VECTOR);
+        self.cycle_counter = 0;
     }
 
     pub fn read_byte(&mut self, address: u16) -> u8 {
@@ -270,8 +273,8 @@ impl Machine {
             let opcode = self.read_byte(self.cpu.program_counter);
             self.cpu.pending_instruction = Some(Instruction::decode(opcode));
         }
-        
-        if self.ppu.check_vblank_nmi() {
+
+        if self.cpu.cycle_tick_count == 0 && self.ppu.check_vblank_nmi() {
             self.handle_nmi();
         }
     }

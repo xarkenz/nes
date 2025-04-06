@@ -1,5 +1,38 @@
 use crate::loader::{Cartridge, ColorConverter};
 
+#[derive(Copy, Clone, Debug)]
+pub struct DelayedFlag<const N: u16> {
+    shifter: u16,
+    current_flag: bool,
+}
+
+impl<const N: u16> DelayedFlag<N> {
+    pub fn new(initial_flag: bool) -> Self {
+        Self {
+            shifter: ((0b10 << N) - 1) * initial_flag as u16,
+            current_flag: initial_flag,
+        }
+    }
+
+    pub fn get_current(&self) -> bool {
+        self.current_flag
+    }
+
+    pub fn set_current(&mut self, flag: bool) {
+        self.current_flag = flag;
+        self.shifter |= (flag as u16) << N;
+    }
+    
+    pub fn get_delayed(&self) -> bool {
+        self.shifter & 1 != 0
+    }
+
+    pub fn tick(&mut self) {
+        self.shifter >>= 1;
+        self.shifter |= (self.current_flag as u16) << N;
+    }
+}
+
 pub const PPU_CONTROL: u16 = 0;
 pub const PPU_MASK: u16 = 1;
 pub const PPU_STATUS: u16 = 2;
@@ -17,13 +50,14 @@ pub const SCREEN_HEIGHT: usize = 240;
 pub const LAST_VISIBLE_SCANLINE: u16 = 239;
 pub const VBLANK_START_SCANLINE: u16 = 241;
 pub const PRE_RENDER_SCANLINE: u16 = 261;
-pub const LAST_DOT: u16 = 341;
+pub const LAST_DOT: u16 = 340;
 const NORMAL_COLOR_MASK: u16 = 0b111111;
 const GREYSCALE_COLOR_MASK: u16 = 0b110000;
 const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const SECONDARY_OAM_SIZE: u8 = 32;
 const OAM_BYTE_2_MASK: u8 = 0b11100011;
+const RENDERING_CHANGE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -35,8 +69,8 @@ pub struct PictureProcessingUnit {
     // PPU_MASK
     mask_background: bool,
     mask_sprites: bool,
-    show_background: bool,
-    show_sprites: bool,
+    render_background_flag: DelayedFlag<RENDERING_CHANGE_DELAY>,
+    render_sprites_flag: DelayedFlag<RENDERING_CHANGE_DELAY>,
     color_emphasis: u16,
     color_mask: u16,
     // PPU_STATUS
@@ -55,7 +89,7 @@ pub struct PictureProcessingUnit {
     vram_read_buffer: u8,
     // Internal
     resetting: bool,
-    rendering: bool,
+    odd_frame: bool,
     write_latch: bool,
     pub scanline: u16,
     pub dot: u16,
@@ -83,8 +117,8 @@ impl PictureProcessingUnit {
             vblank_nmi_enabled: false,
             mask_background: false,
             mask_sprites: false,
-            show_background: false,
-            show_sprites: false,
+            render_background_flag: DelayedFlag::new(false),
+            render_sprites_flag: DelayedFlag::new(false),
             color_emphasis: 0,
             color_mask: NORMAL_COLOR_MASK,
             vblank_flag: false,
@@ -97,7 +131,7 @@ impl PictureProcessingUnit {
             vram_address: 0,
             vram_read_buffer: 0,
             resetting: false,
-            rendering: false,
+            odd_frame: false,
             write_latch: false,
             scanline: 0,
             dot: 0,
@@ -126,14 +160,14 @@ impl PictureProcessingUnit {
         self.vblank_nmi_enabled = false;
         self.mask_background = false;
         self.mask_sprites = false;
-        self.show_background = false;
-        self.show_sprites = false;
+        self.render_background_flag.set_current(false);
+        self.render_sprites_flag.set_current(false);
         self.color_emphasis = 0;
         self.color_mask = NORMAL_COLOR_MASK;
         self.fine_scroll_x = 0;
         self.origin_vram_address = 0;
         self.vram_read_buffer = 0;
-        self.rendering = false;
+        self.odd_frame = false;
         self.write_latch = false;
         self.scanline = 0;
         self.dot = 0;
@@ -162,11 +196,10 @@ impl PictureProcessingUnit {
         }
 
         self.color_mask = if value & 0b1 != 0 { GREYSCALE_COLOR_MASK } else { NORMAL_COLOR_MASK };
-        self.mask_background = value & 0b10 != 0;
-        self.mask_sprites = value & 0b100 != 0;
-        self.show_background = value & 0b1000 != 0;
-        self.show_sprites = value & 0b10000 != 0;
-        self.rendering = self.show_background || self.show_sprites;
+        self.mask_background = value & 0b10 == 0;
+        self.mask_sprites = value & 0b100 == 0;
+        self.render_background_flag.set_current(value & 0b1000 != 0);
+        self.render_sprites_flag.set_current(value & 0b10000 != 0);
         self.color_emphasis = ((value & 0b11100000) as u16) << 1;
     }
 
@@ -307,15 +340,23 @@ impl PictureProcessingUnit {
     }
 
     pub fn tick(&mut self, cartridge: Option<&Cartridge>) {
+        self.render_background_flag.tick();
+        self.render_sprites_flag.tick();
+        // Simulate hardware multiplexing to replicate quirky PPU_STATUS read behavior
         self.vblank_flag = self.next_vblank_flag;
 
-        // Update VRAM address and flags if necessary
+        // Handle rendering if either background or sprites are enabled
+        if self.render_background_flag.get_delayed() || self.render_sprites_flag.get_delayed() {
+            self.tick_rendering(cartridge);
+        }
+
+        // On certain cycles, update status flags and/or trigger NMI
         match (self.scanline, self.dot) {
             (VBLANK_START_SCANLINE, 0) => {
                 self.next_vblank_flag = true;
-            }
-            (VBLANK_START_SCANLINE, 1) => {
                 self.in_vblank = true;
+            }
+            (VBLANK_START_SCANLINE, 3) => {
                 self.vblank_nmi_triggered |= self.vblank_nmi_enabled && self.vblank_flag;
             }
             (PRE_RENDER_SCANLINE, 1) => {
@@ -327,21 +368,36 @@ impl PictureProcessingUnit {
             }
             _ => {}
         }
-        
-        if self.rendering {
-            self.tick_rendering(cartridge);
-        }
 
+        // Handle incrementation of dot and/or scanline for the next cycle
         if self.dot < LAST_DOT {
-            self.dot = self.dot.wrapping_add(1);
+            // Skip one cycle at the very end of odd frames if background rendering is enabled
+            if self.dot == LAST_DOT - 1
+                && self.scanline >= PRE_RENDER_SCANLINE
+                && self.odd_frame
+                && self.render_background_flag.get_delayed()
+            {
+                self.scanline = 0;
+                self.dot = 0;
+                // This is an odd frame, so the next frame will be even
+                self.odd_frame = false;
+            }
+            else {
+                // Next dot
+                self.dot = self.dot.wrapping_add(1);
+            }
         }
         else {
+            // Next scanline
             self.dot = 0;
             if self.scanline < PRE_RENDER_SCANLINE {
                 self.scanline = self.scanline.wrapping_add(1);
             }
             else {
+                // Wrap around to the top of the screen
                 self.scanline = 0;
+                // Toggle the even/odd frame flag for the next frame
+                self.odd_frame = !self.odd_frame;
             }
         }
     }
@@ -349,7 +405,7 @@ impl PictureProcessingUnit {
     fn tick_rendering(&mut self, cartridge: Option<&Cartridge>) {
         // Update VRAM address as necessary for tile fetches
         match (self.scanline, self.dot) {
-            (0 ..= 239 | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
+            (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
                 self.draw_sliver();
                 self.load_next_sliver(cartridge);
                 self.increment_coarse_x();
@@ -357,10 +413,10 @@ impl PictureProcessingUnit {
                     self.increment_fine_y();
                 }
             }
-            (0 ..= 239 | PRE_RENDER_SCANLINE, 257) => {
+            (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 257) => {
                 self.reset_coarse_x();
             }
-            (0 ..= 239 | PRE_RENDER_SCANLINE, 328 | 336) => {
+            (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 328 | 336) => {
                 self.load_next_sliver(cartridge);
                 self.increment_coarse_x();
             }
@@ -382,7 +438,6 @@ impl PictureProcessingUnit {
                     self.sprite_evaluation_finished = false;
                     self.sprite_0_in_range = false;
                 }
-                // TODO: this is awful
                 65 ..= 256 if self.dot & 1 != 0 => {
                     // Perform sprite evaluation (reading from primary OAM in realtime, as the CPU
                     // can mess with that; writing to secondary OAM can happen simultaneously)
@@ -433,8 +488,6 @@ impl PictureProcessingUnit {
                 257 => {
                     // Screw sprite output units, let's just load a buffer since it's basically
                     // invisible behavior to the CPU anyway
-                    // Clear the buffer first
-                    self.sprite_output_buffer.fill(0);
                     if let Some(cartridge) = cartridge {
                         self.load_sprite_output_buffer(self.scanline as u8, cartridge);
                     }
@@ -506,7 +559,7 @@ impl PictureProcessingUnit {
         // Compute sliver color indices
         if let Some(cartridge) = cartridge {
             let mut sliver = [0; 8];
-            if self.show_background {
+            if self.render_background_flag.get_delayed() {
                 self.compute_background_sliver(&mut sliver, self.vram_address, cartridge);
             }
             self.sliver_shifter[8..].copy_from_slice(&sliver);
@@ -519,7 +572,7 @@ impl PictureProcessingUnit {
     fn draw_sliver(&mut self) {
         // Make sure we are on a render scanline (dot is guaranteed to be valid unless there is a
         // logic error in the tick() method)
-        if self.scanline as usize >= SCREEN_HEIGHT {
+        if self.scanline > LAST_VISIBLE_SCANLINE {
             return;
         }
 
@@ -527,31 +580,44 @@ impl PictureProcessingUnit {
         let base_pixel_x = self.dot as usize - 8;
         let base_pixel_index = self.scanline as usize * SCREEN_WIDTH + base_pixel_x;
         let shift_amount = self.fine_scroll_x as usize;
+
+        let draw_background = self.render_background_flag.get_delayed()
+            && !(self.mask_background && base_pixel_x == 0);
+        let draw_sprites = self.render_sprites_flag.get_delayed()
+            && self.scanline > 0
+            && !(self.mask_sprites && base_pixel_x == 0);
+
         for offset_x in 0 .. 8 {
+            let mut color_index = 0;
+
             // Retrieve background pixel
-            let mut color_index = self.sliver_shifter[shift_amount + offset_x];
+            if draw_background {
+                color_index = self.sliver_shifter[shift_amount + offset_x];
+            }
 
-            // Possibly modify pixel based on sprite output
-            let buffer_value = self.sprite_output_buffer[base_pixel_x + offset_x];
-            if self.show_sprites && buffer_value != 0 {
-                // These flags are made up but we kinda need them in order to do it this way
-                let behind_background = buffer_value & 0b10000000 != 0;
-                let is_sprite_0 = buffer_value & 0b1000000 != 0;
-                let sprite_color_index = buffer_value & 0b11111;
+            // Modify pixel based on sprite output if applicable
+            if draw_sprites {
+                let sprite_output = self.sprite_output_buffer[base_pixel_x + offset_x];
+                if sprite_output != 0 {
+                    // These flags are made up but we kinda need them in order to do it this way
+                    let behind_background = sprite_output & 0b10000000 != 0;
+                    let is_sprite_0 = sprite_output & 0b1000000 != 0;
+                    let sprite_color_index = sprite_output & 0b11111;
 
-                if color_index == 0 {
-                    // Background is transparent, so sprite pixel will always be used
-                    color_index = sprite_color_index;
-                }
-                else {
-                    // Check for sprite 0 hit (happens if opaque pixel of sprite 0 is being compared
-                    // with opaque pixel of background)
-                    if is_sprite_0 && base_pixel_x >= 2 {
-                        self.sprite_0_hit = true;
-                    }
-                    // Overwrite background pixel unless the "behind background" flag is set
-                    if !behind_background {
+                    if color_index == 0 {
+                        // Background is transparent, so sprite pixel will always be used
                         color_index = sprite_color_index;
+                    }
+                    else {
+                        // Check for sprite 0 hit (happens if opaque pixel of sprite 0 is being
+                        // compared with opaque pixel of background)
+                        if is_sprite_0 && base_pixel_x >= 2 {
+                            self.sprite_0_hit = true;
+                        }
+                        // Overwrite background pixel unless the "behind background" flag is set
+                        if !behind_background {
+                            color_index = sprite_color_index;
+                        }
                     }
                 }
             }
@@ -603,6 +669,9 @@ impl PictureProcessingUnit {
     }
 
     fn load_sprite_output_buffer(&mut self, y: u8, cartridge: &Cartridge) {
+        // Clear the buffer first
+        self.sprite_output_buffer.fill(0);
+
         for (sprite_index, sprite_data) in self.secondary_oam.chunks_exact(4).enumerate() {
             // Process byte 2 first since we need to know about flipping early on
             let attributes = sprite_data[2];
