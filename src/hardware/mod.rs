@@ -29,7 +29,7 @@ pub const BUTTON_COUNT: usize = 8;
 const CONTROLLER_EXCESS_READ: u8 = 0x01;
 
 pub struct Machine {
-    pub cartridge_slot: Option<Cartridge>,
+    pub cartridge: Option<Cartridge>,
     pub cpu: CentralProcessingUnit,
     pub ppu: PictureProcessingUnit,
     internal_ram: Box<[u8; 0x0800]>,
@@ -46,7 +46,7 @@ pub struct Machine {
 impl Machine {
     pub fn new() -> Self {
         Self {
-            cartridge_slot: None,
+            cartridge: None,
             cpu: CentralProcessingUnit::new(),
             ppu: PictureProcessingUnit::new(),
             internal_ram: Box::new([0; 0x0800]),
@@ -102,7 +102,7 @@ impl Machine {
             0x2000 ..= 0x3FFF => match address & 0x0007 {
                 PPU_STATUS => self.ppu.read_status(),
                 PPU_OAM_DATA => self.ppu.read_oam_data(),
-                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge_slot {
+                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge {
                     self.ppu.read_vram_data(cartridge)
                 } else {
                     OPEN_BUS
@@ -134,7 +134,7 @@ impl Machine {
                     controller_read
                 }
             }
-            _ => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+            _ => self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
                 cartridge.read_cpu_byte(address)
             })
         }
@@ -145,7 +145,7 @@ impl Machine {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize]
             }
-            _ => self.cartridge_slot.as_ref().map_or(OPEN_BUS, |cartridge| {
+            _ => self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
                 cartridge.read_cpu_byte(address)
             })
         }
@@ -163,21 +163,23 @@ impl Machine {
                 PPU_OAM_DATA => self.ppu.write_oam_data(value),
                 PPU_SCROLL => self.ppu.write_scroll(value),
                 PPU_VRAM_ADDRESS => self.ppu.write_vram_address(value),
-                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge_slot {
-                    // println!("${:04X}: writing ${:04X} = #${value:02X} at ({}, {})", self.cpu.program_counter, self.ppu.vram_address, self.ppu.scanline, self.ppu.dot);
+                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge {
                     self.ppu.write_vram_data(value, cartridge);
                 }
                 _ => {}
             }
             OAM_DMA_REGISTER => {
                 self.cpu.start_oam_dma(value);
+                if self.debug_printing {
+                    println!("[OAM DMA started]");
+                }
             }
             CONTROLLER_1_REGISTER => {
                 self.controller_strobe = value & 1 != 0;
                 self.controller_1_button = 0;
                 self.controller_2_button = 0;
             }
-            _ => if let Some(cartridge) = &mut self.cartridge_slot {
+            _ => if let Some(cartridge) = &mut self.cartridge {
                 cartridge.write_cpu_byte(address, value);
             }
         }
@@ -256,9 +258,9 @@ impl Machine {
     }
 
     pub fn tick(&mut self) {
-        self.ppu.tick(self.cartridge_slot.as_mut());
+        self.ppu.tick(self.cartridge.as_mut());
         self.cpu.tick();
-        if let Some(cartridge) = &mut self.cartridge_slot {
+        if let Some(cartridge) = &mut self.cartridge {
             cartridge.tick(self.ppu.vram_address);
         }
 
@@ -287,7 +289,7 @@ impl Machine {
         else if self.ppu.check_vblank_nmi() {
             self.handle_nmi();
         }
-        else if !self.cpu.interrupt_disable_flag && self.cartridge_slot.as_mut().is_some_and(Cartridge::check_irq) {
+        else if !self.cpu.interrupt_disable_flag && self.cartridge.as_mut().is_some_and(Cartridge::check_irq) {
             self.handle_irq();
         }
         else if self.cpu.oam_dma_active {
@@ -310,6 +312,9 @@ impl Machine {
                 self.ppu.write_oam_data(value);
                 if self.cpu.oam_dma_address & 0xFF == 0x00 {
                     self.cpu.oam_dma_active = false;
+                    if self.debug_printing {
+                        println!("[OAM DMA finished]");
+                    }
                 }
             }
         }
@@ -319,25 +324,15 @@ impl Machine {
         }
     }
 
-    pub fn debug_step(&mut self, stop_instruction: Option<&Instruction>) {
+    pub fn debug_step(&mut self) -> &Instruction {
         self.debug_printing = true;
         loop {
             let last_instruction = self.cpu.pending_instruction;
             self.tick();
-            // The elusive quadruple-nested if statement
-            if self.cpu.pending_instruction.is_none() {
-                if let Some(stop_instruction) = stop_instruction {
-                    if let Some(last_instruction) = last_instruction {
-                        if last_instruction == stop_instruction {
-                            break;
-                        }
-                    }
-                }
-                else {
-                    break;
-                }
+            if let (Some(instruction), None) = (last_instruction, self.cpu.pending_instruction) {
+                self.debug_printing = false;
+                break instruction;
             }
         }
-        self.debug_printing = false;
     }
 }

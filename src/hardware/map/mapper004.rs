@@ -183,9 +183,9 @@ impl Mapper for Mapper004 {
                 // Even: Nametable Mirroring, Odd: PRG-RAM Protect
                 if address & 1 == 0 {
                     self.nametables.mirroring = if value & 1 == 0 {
-                        NametableMirroring::Vertical
-                    } else {
                         NametableMirroring::Horizontal
+                    } else {
+                        NametableMirroring::Vertical
                     };
                 }
                 else {

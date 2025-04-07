@@ -1,8 +1,9 @@
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
-use crate::hardware::instructions::Instruction;
 
 pub mod hardware;
 pub mod loader;
@@ -50,6 +51,22 @@ pub fn parse_int<T: FromStrRadix>(string: &str) -> Result<T, std::num::ParseIntE
 }
 
 pub fn main() {
+    let keyboard_interrupt_flag = Arc::new(AtomicBool::new(false));
+    {
+        // Set up Ctrl+C handler
+        let keyboard_interrupt_flag = keyboard_interrupt_flag.clone();
+        let result = ctrlc::set_handler(move || {
+            keyboard_interrupt_flag.store(true, Ordering::Relaxed);
+            println!("Stopping...")
+        });
+        if let Err(error) = result {
+            eprintln!("Warning: Failed to setup Ctrl+C handler: {}", error);
+        }
+    }
+    let keyboard_interrupt = || {
+        keyboard_interrupt_flag.swap(false, Ordering::Relaxed)
+    };
+
     let mut machine = Machine::new();
     let mut user_input = String::new();
 
@@ -92,7 +109,7 @@ pub fn main() {
                 }
             };
 
-            machine.cartridge_slot = Some(cartridge);
+            machine.cartridge = Some(cartridge);
             println!("Successfully loaded cartridge.");
             machine.reset();
             println!("Console reset.");
@@ -102,12 +119,35 @@ pub fn main() {
             println!("Console reset.");
         }
         else if command.eq_ignore_ascii_case("Step") {
-            machine.debug_step(None);
+            machine.debug_step();
             println!("Step completed.");
         }
-        else if command.eq_ignore_ascii_case("StepOut") {
-            machine.debug_step(Some(Instruction::decode(0x60))); // RTS
-            println!("Subroutine completed.");
+        else if command.eq_ignore_ascii_case("StepOver") {
+            // Ignore JSR if it is the first instruction
+            if machine.debug_step().mnemonic() != "RTS" {
+                let mut nesting_level = 0_u64;
+                while !keyboard_interrupt() {
+                    match machine.debug_step().mnemonic() {
+                        "JSR" => {
+                            let overflowed;
+                            (nesting_level, overflowed) = nesting_level.overflowing_add(1);
+                            if overflowed {
+                                eprintln!("Error: Nesting level overflowed.");
+                                break;
+                            }
+                        }
+                        "RTS" => {
+                            let underflowed;
+                            (nesting_level, underflowed) = nesting_level.overflowing_sub(1);
+                            if underflowed {
+                                println!("Subroutine completed.");
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
         else if command.eq_ignore_ascii_case("StepBkpt") {
             let address = match parse_int(argument) {
@@ -117,10 +157,17 @@ pub fn main() {
                     continue;
                 }
             };
-            while machine.cpu.program_counter != address {
-                machine.debug_step(None);
+            while !keyboard_interrupt() && machine.cpu.program_counter != address {
+                machine.debug_step();
             }
             println!("Breakpoint reached.");
+        }
+        else if command.eq_ignore_ascii_case("NextFrame") {
+            while !machine.ppu.is_entering_vblank() {
+                machine.tick();
+            }
+            machine.tick();
+            println!("Entered vblank of next frame.");
         }
         else if command.eq_ignore_ascii_case("State") {
             machine.cpu.debug_print_state();
@@ -275,7 +322,7 @@ pub fn main() {
             println!();
         }
         else if command.eq_ignore_ascii_case("PTables") {
-            let Some(cartridge) = &mut machine.cartridge_slot else {
+            let Some(cartridge) = &mut machine.cartridge else {
                 println!("Error: no cartridge loaded.");
                 continue;
             };
