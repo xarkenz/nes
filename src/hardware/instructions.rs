@@ -145,8 +145,16 @@ impl Instruction {
     }
 }
 
+impl PartialEq for Instruction {
+    fn eq(&self, other: &Self) -> bool {
+        // Just compare addresses, all instances should have come from the INSTRUCTIONS table
+        self as *const _ == other as *const _
+    }
+}
+
 // Cycle counts are from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
 // TODO: some of the indexed ones add 1 cycle if crossing a page boundary, but not all
+// TODO: branches add a cycle if the branch is taken
 const INSTRUCTIONS: [Instruction; 0x100] = [
     Instruction::new(0x00, BRK, Immediate, 7),
     Instruction::new(0x01, ORA, IndirectX, 6),

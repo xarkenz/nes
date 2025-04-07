@@ -7,8 +7,9 @@ mod mapper004;
 pub trait Mapper {
     fn name(&self) -> &'static str;
 
-    fn tick(&mut self) {
+    fn tick(&mut self, ppu_address: u16) {
         // No-op by default
+        let _ = ppu_address;
     }
 
     fn check_irq(&mut self) -> bool {

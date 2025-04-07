@@ -109,11 +109,12 @@ impl Mapper004 {
             // End of scanline detected, decrement counter
             if self.irq_counter == 0 {
                 self.irq_counter = self.irq_reload_value;
-                self.irq_triggered |= self.irq_enabled;
             }
             else {
                 self.irq_counter -= 1;
             }
+            // println!("counter: {}", self.irq_counter);
+            self.irq_triggered |= self.irq_enabled && self.irq_counter == 0;
         }
 
         self.ticks_since_a12_high = 0;
@@ -125,7 +126,8 @@ impl Mapper for Mapper004 {
         "Mapper 004 (MMC3/MMC6)"
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, ppu_address: u16) {
+        self.check_ppu_address(ppu_address);
         self.ticks_since_a12_high = self.ticks_since_a12_high.saturating_add(1);
     }
 
@@ -167,7 +169,7 @@ impl Mapper for Mapper004 {
                         self.update_chr_banks();
                     }
                 }
-                else {
+                else if self.bank_registers[self.register_select] != value {
                     self.bank_registers[self.register_select] = value;
                     if self.register_select < 6 {
                         self.update_chr_banks();
@@ -202,6 +204,9 @@ impl Mapper for Mapper004 {
             0xE000 ..= 0xFFFF => {
                 // Even: IRQ Disable, Odd: IRQ Enable
                 self.irq_enabled = address & 1 != 0;
+                if !self.irq_enabled {
+                    self.irq_triggered = false;
+                }
             }
             _ => {}
         }

@@ -96,8 +96,8 @@ impl Cartridge {
         &self.header
     }
     
-    pub fn tick(&mut self) {
-        self.mapper.tick();
+    pub fn tick(&mut self, ppu_address: u16) {
+        self.mapper.tick(ppu_address);
     }
     
     pub fn check_irq(&mut self) -> bool {

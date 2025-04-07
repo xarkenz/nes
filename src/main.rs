@@ -2,6 +2,7 @@ use std::io::Write;
 use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
+use crate::hardware::instructions::Instruction;
 
 pub mod hardware;
 pub mod loader;
@@ -101,11 +102,25 @@ pub fn main() {
             println!("Console reset.");
         }
         else if command.eq_ignore_ascii_case("Step") {
-            let opcode = machine.read_byte_silent(machine.cpu.program_counter);
-            let instruction = instructions::Instruction::decode(opcode);
-            println!("Opcode: ${opcode:02X}");
-            println!("Disassembly: {}", instruction.disassemble(&machine, machine.cpu.program_counter));
-            // machine.execute_instruction();
+            machine.debug_step(None);
+            println!("Step completed.");
+        }
+        else if command.eq_ignore_ascii_case("StepOut") {
+            machine.debug_step(Some(Instruction::decode(0x60))); // RTS
+            println!("Subroutine completed.");
+        }
+        else if command.eq_ignore_ascii_case("StepBkpt") {
+            let address = match parse_int(argument) {
+                Ok(address) => address,
+                Err(error) => {
+                    eprintln!("Error: invalid address: {error}");
+                    continue;
+                }
+            };
+            while machine.cpu.program_counter != address {
+                machine.debug_step(None);
+            }
+            println!("Breakpoint reached.");
         }
         else if command.eq_ignore_ascii_case("State") {
             machine.cpu.debug_print_state();

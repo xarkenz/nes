@@ -110,7 +110,7 @@ impl Mapper for Mapper001 {
         "Mapper 001 (MMC1)"
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, _ppu_address: u16) {
         self.ignore_serial_port_writes = false;
     }
 

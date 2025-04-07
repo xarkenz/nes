@@ -38,6 +38,7 @@ pub struct Machine {
     controller_strobe: bool,
     controller_1_button: usize,
     controller_2_button: usize,
+    debug_printing: bool,
     debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
     cycle_counter: u64,
 }
@@ -54,6 +55,7 @@ impl Machine {
             controller_strobe: false,
             controller_1_button: BUTTON_COUNT,
             controller_2_button: BUTTON_COUNT,
+            debug_printing: false,
             debug_disassembly: None,
             cycle_counter: 0,
         }
@@ -257,7 +259,7 @@ impl Machine {
         self.ppu.tick(self.cartridge_slot.as_mut());
         self.cpu.tick();
         if let Some(cartridge) = &mut self.cartridge_slot {
-            cartridge.tick();
+            cartridge.tick(self.ppu.vram_address);
         }
 
         if let Some(instruction) = self.cpu.pending_instruction {
@@ -273,6 +275,10 @@ impl Machine {
                         format!("${program_counter:04X}: {}", instruction.disassemble(self, program_counter)),
                     ));
                     self.debug_disassembly = Some(disassembly);
+                }
+                if self.debug_printing {
+                    let program_counter = self.cpu.program_counter;
+                    println!("${program_counter:04X}: {}", instruction.disassemble(self, program_counter));
                 }
 
                 instruction.execute(self);
@@ -311,5 +317,27 @@ impl Machine {
             self.cpu.oam_dma_fetch = Some(self.read_byte(self.cpu.oam_dma_address));
             self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
         }
+    }
+
+    pub fn debug_step(&mut self, stop_instruction: Option<&Instruction>) {
+        self.debug_printing = true;
+        loop {
+            let last_instruction = self.cpu.pending_instruction;
+            self.tick();
+            // The elusive quadruple-nested if statement
+            if self.cpu.pending_instruction.is_none() {
+                if let Some(stop_instruction) = stop_instruction {
+                    if let Some(last_instruction) = last_instruction {
+                        if last_instruction == stop_instruction {
+                            break;
+                        }
+                    }
+                }
+                else {
+                    break;
+                }
+            }
+        }
+        self.debug_printing = false;
     }
 }
