@@ -258,6 +258,7 @@ impl Machine {
     }
 
     pub fn tick(&mut self) {
+        // This tick ordering is important
         self.ppu.tick(self.cartridge.as_mut());
         self.cpu.tick();
         if let Some(cartridge) = &mut self.cartridge {
@@ -303,7 +304,7 @@ impl Machine {
 
     fn tick_oam_dma(&mut self) {
         // Perform a get/put at the beginning of each CPU cycle
-        if self.cpu.cycle_tick_count != 0 {
+        if self.cpu.cycle_tick_offset != 0 {
             return;
         }
 

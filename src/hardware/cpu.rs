@@ -18,10 +18,12 @@ pub struct CentralProcessingUnit {
     pub oam_dma_address: u16,
     pub oam_dma_active: bool,
     pub oam_dma_fetch: Option<u8>,
-    pub cycle_tick_count: u16,
+    pub cycle_tick_offset: u16,
     pub is_put_cycle: bool,
     pub ticks_available: u16,
+    pub delay_ticks: u16,
     pub pending_instruction: Option<&'static Instruction>,
+    pub debug_cycle_counter: u64,
 }
 
 impl CentralProcessingUnit {
@@ -41,10 +43,12 @@ impl CentralProcessingUnit {
             oam_dma_address: 0,
             oam_dma_active: false,
             oam_dma_fetch: None,
-            cycle_tick_count: 0,
+            cycle_tick_offset: 0,
             is_put_cycle: false,
             ticks_available: 0,
+            delay_ticks: 0,
             pending_instruction: None,
+            debug_cycle_counter: 0,
         }
     }
     
@@ -53,6 +57,8 @@ impl CentralProcessingUnit {
         self.interrupt_disable_flag = true;
         self.stack_pointer = self.stack_pointer.wrapping_sub(3);
         self.oam_dma_active = false;
+        self.oam_dma_fetch = None;
+        self.delay_ticks = 0;
         self.ticks_available = 0;
         self.pending_instruction = None;
     }
@@ -89,11 +95,18 @@ impl CentralProcessingUnit {
     }
 
     pub fn tick(&mut self) {
-        self.ticks_available += 1;
-        self.cycle_tick_count += 1;
-        if self.cycle_tick_count >= TICKS_PER_CPU_CYCLE {
-            self.cycle_tick_count = 0;
+        if self.delay_ticks == 0 {
+            self.ticks_available += 1;
+        }
+        else {
+            self.delay_ticks -= 1;
+        }
+
+        self.cycle_tick_offset += 1;
+        if self.cycle_tick_offset >= TICKS_PER_CPU_CYCLE {
+            self.cycle_tick_offset = 0;
             self.is_put_cycle = !self.is_put_cycle;
+            self.debug_cycle_counter = self.debug_cycle_counter.saturating_add(1);
         }
     }
 

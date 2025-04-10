@@ -169,6 +169,15 @@ pub fn main() {
             machine.tick();
             println!("Entered vblank of next frame.");
         }
+        else if command.eq_ignore_ascii_case("StartCounter") {
+            machine.cpu.debug_cycle_counter = 0;
+            machine.ppu.debug_cycle_counter = 0;
+            println!("Reset cycle counters to zero.");
+        }
+        else if command.eq_ignore_ascii_case("Counter") {
+            println!("CPU cycles: {}", machine.cpu.debug_cycle_counter);
+            println!("PPU cycles: {}", machine.ppu.debug_cycle_counter);
+        }
         else if command.eq_ignore_ascii_case("State") {
             machine.cpu.debug_print_state();
         }

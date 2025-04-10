@@ -13,6 +13,11 @@ impl<const N: u16> DelayedFlag<N> {
             current_flag: initial_flag,
         }
     }
+    
+    pub fn reset(&mut self, flag: bool) {
+        self.shifter = ((0b10 << N) - 1) * flag as u16;
+        self.current_flag = flag;
+    }
 
     pub fn get_current(&self) -> bool {
         self.current_flag
@@ -57,7 +62,8 @@ const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const SECONDARY_OAM_SIZE: u8 = 32;
 const OAM_BYTE_2_MASK: u8 = 0b11100011;
-const RENDERING_CHANGE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
+const NMI_TRIGGER_DELAY: u16 = 2; // Just needs to delay NMI by one instruction I think
+const RENDER_ENABLE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -69,8 +75,8 @@ pub struct PictureProcessingUnit {
     // PPU_MASK
     mask_background: bool,
     mask_sprites: bool,
-    render_background_flag: DelayedFlag<RENDERING_CHANGE_DELAY>,
-    render_sprites_flag: DelayedFlag<RENDERING_CHANGE_DELAY>,
+    render_background_flag: DelayedFlag<RENDER_ENABLE_DELAY>,
+    render_sprites_flag: DelayedFlag<RENDER_ENABLE_DELAY>,
     color_emphasis: u16,
     color_mask: u16,
     // PPU_STATUS
@@ -94,7 +100,7 @@ pub struct PictureProcessingUnit {
     pub scanline: u16,
     pub dot: u16,
     pub in_vblank: bool,
-    vblank_nmi_triggered: bool, // true if actively pulling /NMI low
+    vblank_nmi_triggered: DelayedFlag<NMI_TRIGGER_DELAY>, // true if actively pulling /NMI low
     sliver_shifter: [u8; 16], // epic variable name
     pub palette_ram: [u8; 32],
     primary_oam: Box<[u8; 0x100]>,
@@ -105,6 +111,7 @@ pub struct PictureProcessingUnit {
     sprite_output_buffer: Box<[u8; SCREEN_WIDTH]>,
     pub color_converter: ColorConverter,
     pub screen_buffer: Box<[u32; SCREEN_WIDTH * SCREEN_HEIGHT]>,
+    pub debug_cycle_counter: u64,
 }
 
 impl PictureProcessingUnit {
@@ -136,7 +143,7 @@ impl PictureProcessingUnit {
             scanline: 0,
             dot: 0,
             in_vblank: false,
-            vblank_nmi_triggered: false,
+            vblank_nmi_triggered: DelayedFlag::new(false),
             sliver_shifter: [0; 16],
             palette_ram: [0; 32],
             primary_oam: Box::new([0; 0x100]),
@@ -147,6 +154,7 @@ impl PictureProcessingUnit {
             sprite_output_buffer: Box::new([0; SCREEN_WIDTH]),
             color_converter: ColorConverter::new(),
             screen_buffer: Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT]),
+            debug_cycle_counter: 0,
         }
     }
 
@@ -160,8 +168,8 @@ impl PictureProcessingUnit {
         self.vblank_nmi_enabled = false;
         self.mask_background = false;
         self.mask_sprites = false;
-        self.render_background_flag.set_current(false);
-        self.render_sprites_flag.set_current(false);
+        self.render_background_flag.reset(false);
+        self.render_sprites_flag.reset(false);
         self.color_emphasis = 0;
         self.color_mask = NORMAL_COLOR_MASK;
         self.fine_scroll_x = 0;
@@ -171,7 +179,7 @@ impl PictureProcessingUnit {
         self.write_latch = false;
         self.scanline = 0;
         self.dot = 0;
-        self.vblank_nmi_triggered = false;
+        self.vblank_nmi_triggered.reset(false);
     }
 
     pub fn write_control(&mut self, value: u8) {
@@ -185,9 +193,12 @@ impl PictureProcessingUnit {
         self.sprite_ptable_address = if value & 0b1000 != 0 { 0x1000 } else { 0x0000 };
         self.background_ptable_address = if value & 0b10000 != 0 { 0x1000 } else { 0x0000 };
         self.tall_sprites = value & 0b100000 != 0;
-        let next_vblank_nmi_enabled = value & 0b10000000 != 0;
-        self.vblank_nmi_triggered |= self.next_vblank_flag && next_vblank_nmi_enabled && !self.vblank_nmi_enabled;
-        self.vblank_nmi_enabled = next_vblank_nmi_enabled;
+        let next_nmi_enabled = value & 0b10000000 != 0;
+        // Trigger NMI on rising edge of NMI enable if vblank flag is set
+        if self.next_vblank_flag && next_nmi_enabled && !self.vblank_nmi_enabled {
+            self.vblank_nmi_triggered.set_current(true);
+        }
+        self.vblank_nmi_enabled = next_nmi_enabled;
     }
 
     pub fn write_mask(&mut self, value: u8) {
@@ -312,7 +323,11 @@ impl PictureProcessingUnit {
     }
 
     pub fn check_vblank_nmi(&mut self) -> bool {
-        std::mem::replace(&mut self.vblank_nmi_triggered, false)
+        let nmi_triggered = self.vblank_nmi_triggered.get_delayed();
+        if nmi_triggered {
+            self.vblank_nmi_triggered.reset(false);
+        }
+        nmi_triggered
     }
 
     pub fn is_at_top_left(&self) -> bool {
@@ -340,8 +355,12 @@ impl PictureProcessingUnit {
     }
 
     pub fn tick(&mut self, cartridge: Option<&mut Cartridge>) {
+        self.debug_cycle_counter = self.debug_cycle_counter.saturating_add(1);
+
+        self.vblank_nmi_triggered.tick();
         self.render_background_flag.tick();
         self.render_sprites_flag.tick();
+
         // Simulate hardware multiplexing to replicate quirky PPU_STATUS read behavior
         self.vblank_flag = self.next_vblank_flag;
 
@@ -359,14 +378,19 @@ impl PictureProcessingUnit {
                 self.in_vblank = true;
             }
             (VBLANK_START_SCANLINE, 3) => {
-                self.vblank_nmi_triggered |= self.vblank_nmi_enabled && self.vblank_flag;
+                if self.vblank_nmi_enabled && self.vblank_flag {
+                    self.vblank_nmi_triggered.set_current(true);
+                    self.vblank_nmi_triggered.tick();
+                }
+            }
+            (PRE_RENDER_SCANLINE, 0) => {
+                self.next_vblank_flag = false;
+                self.in_vblank = false;
             }
             (PRE_RENDER_SCANLINE, 1) => {
                 self.resetting = false;
-                self.next_vblank_flag = false;
                 self.sprite_0_hit = false;
                 self.sprite_overflow = false;
-                self.in_vblank = false;
             }
             _ => {}
         }

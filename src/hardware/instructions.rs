@@ -57,40 +57,40 @@ impl AddressingMode {
         }
     }
 
-    fn calculate_address(self, machine: &mut Machine) -> u16 {
+    fn calculate_address(self, machine: &mut Machine) -> (u16, bool) {
         match self {
             Immediate => {
-                machine.cpu.program_counter.wrapping_sub(1)
+                (machine.cpu.program_counter.wrapping_sub(1), false)
             }
             ZeroPage => {
-                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16
+                (machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16, false)
             }
             ZeroPageX => {
-                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16
+                (machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16, false)
             }
             ZeroPageY => {
-                machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_y) as u16
+                (machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_y) as u16, false)
             }
             Absolute => {
-                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2))
+                (machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), false)
             }
             AbsoluteX => {
-                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)).wrapping_add(machine.cpu.register_x as u16)
+                page_crossing_add(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_x as u16)
             }
             AbsoluteY => {
-                machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)).wrapping_add(machine.cpu.register_y as u16)
+                page_crossing_add(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_y as u16)
             }
             Indirect => {
                 let address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
-                machine.read_pair_paged(address)
+                (machine.read_pair_paged(address), false)
             }
             IndirectX => {
                 let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16;
-                machine.read_pair_paged(address)
+                (machine.read_pair_paged(address), false)
             }
             IndirectY => {
                 let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16;
-                machine.read_pair_paged(address).wrapping_add(machine.cpu.register_y as u16)
+                page_crossing_add(machine.read_pair_paged(address), machine.cpu.register_y as u16)
             }
             _ => panic!("cannot calculate address for addressing mode")
         }
@@ -153,8 +153,6 @@ impl PartialEq for Instruction {
 }
 
 // Cycle counts are from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
-// TODO: some of the indexed ones add 1 cycle if crossing a page boundary, but not all
-// TODO: branches add a cycle if the branch is taken
 const INSTRUCTIONS: [Instruction; 0x100] = [
     Instruction::new(0x00, BRK, Immediate, 7),
     Instruction::new(0x01, ORA, IndirectX, 6),
@@ -425,10 +423,22 @@ const fn add_overflowed(lhs: u8, rhs: u8, result: u8) -> bool {
     ((result ^ lhs) & (result ^ rhs) & 0b10000000) != 0
 }
 
+const fn page_crossing_add(lhs: u16, rhs: u16) -> (u16, bool) {
+    let result = lhs.wrapping_add(rhs);
+    (result, result >> 8 != lhs >> 8)
+}
+
 fn process_branch(machine: &mut Machine) {
+    let start_page = machine.cpu.program_counter & 0xFF00;
     let offset = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1));
     // Offset is sign-extended
     machine.cpu.program_counter = machine.cpu.program_counter.wrapping_add_signed(offset as i8 as i16);
+    // Delay 1 cycle since the branch is being taken
+    machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+    // If a page boundary was crossed, delay an extra cycle
+    if machine.cpu.program_counter & 0xFF00 != start_page {
+        machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+    }
 }
 
 const UNMAPPED: Operation = Operation {
@@ -444,7 +454,7 @@ const UNMAPPED: Operation = Operation {
 const ADC: Operation = Operation {
     mnemonic: "ADC",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         let addend = machine.read_byte(address);
         let carry_in = machine.cpu.carry_flag;
         let (result, carry_out) = carrying_add(machine.cpu.accumulator, addend, carry_in);
@@ -454,6 +464,11 @@ const ADC: Operation = Operation {
         machine.cpu.carry_flag = carry_out;
         machine.cpu.overflow_flag = overflowed;
         machine.cpu.set_result_flags(result);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -462,10 +477,15 @@ const ADC: Operation = Operation {
 const AND: Operation = Operation {
     mnemonic: "AND",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator &= machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.accumulator);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -482,7 +502,7 @@ const ASL: Operation = Operation {
             machine.cpu.accumulator = result;
         }
         else {
-            let address = addressing_mode.calculate_address(machine);
+            let (address, _page_crossed) = addressing_mode.calculate_address(machine);
             let value = machine.read_byte(address);
             carry_out = (value & 0b10000000) != 0;
             result = value << 1;
@@ -532,7 +552,7 @@ const BEQ: Operation = Operation {
 const BIT: Operation = Operation {
     mnemonic: "BIT",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         let value = machine.read_byte(address);
 
         machine.cpu.zero_flag = (machine.cpu.accumulator & value) == 0;
@@ -650,12 +670,17 @@ const CLV: Operation = Operation {
 const CMP: Operation = Operation {
     mnemonic: "CMP",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         let subtrahend = machine.read_byte(address);
         let (result, borrowed) = machine.cpu.accumulator.overflowing_sub(subtrahend);
 
         machine.cpu.carry_flag = !borrowed;
         machine.cpu.set_result_flags(result);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -664,7 +689,7 @@ const CMP: Operation = Operation {
 const CPX: Operation = Operation {
     mnemonic: "CPX",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         let subtrahend = machine.read_byte(address);
         let (result, borrowed) = machine.cpu.register_x.overflowing_sub(subtrahend);
 
@@ -678,7 +703,7 @@ const CPX: Operation = Operation {
 const CPY: Operation = Operation {
     mnemonic: "CPY",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         let subtrahend = machine.read_byte(address);
         let (result, borrowed) = machine.cpu.register_y.overflowing_sub(subtrahend);
 
@@ -692,7 +717,7 @@ const CPY: Operation = Operation {
 const DEC: Operation = Operation {
     mnemonic: "DEC",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _page_crossed) = addressing_mode.calculate_address(machine);
         let result = machine.read_byte(address).wrapping_sub(1);
         machine.write_byte(address, result);
 
@@ -727,10 +752,15 @@ const DEY: Operation = Operation {
 const EOR: Operation = Operation {
     mnemonic: "EOR",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator ^= machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.accumulator);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -739,7 +769,7 @@ const EOR: Operation = Operation {
 const INC: Operation = Operation {
     mnemonic: "INC",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _page_crossed) = addressing_mode.calculate_address(machine);
         let result = machine.read_byte(address).wrapping_add(1);
         machine.write_byte(address, result);
 
@@ -774,7 +804,7 @@ const INY: Operation = Operation {
 const JMP: Operation = Operation {
     mnemonic: "JMP",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         machine.cpu.program_counter = address;
     },
 };
@@ -784,7 +814,7 @@ const JMP: Operation = Operation {
 const JSR: Operation = Operation {
     mnemonic: "JSR",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         machine.stack_push_pair(machine.cpu.program_counter.wrapping_sub(1));
         machine.cpu.program_counter = address;
     },
@@ -795,10 +825,15 @@ const JSR: Operation = Operation {
 const LDA: Operation = Operation {
     mnemonic: "LDA",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator = machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.accumulator);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -807,10 +842,15 @@ const LDA: Operation = Operation {
 const LDX: Operation = Operation {
     mnemonic: "LDX",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.register_x = machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.register_x);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -819,10 +859,15 @@ const LDX: Operation = Operation {
 const LDY: Operation = Operation {
     mnemonic: "LDY",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.register_y = machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.register_y);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -839,7 +884,7 @@ const LSR: Operation = Operation {
             machine.cpu.accumulator = result;
         }
         else {
-            let address = addressing_mode.calculate_address(machine);
+            let (address, _page_crossed) = addressing_mode.calculate_address(machine);
             let value = machine.read_byte(address);
             carry_out = (value & 0b00000001) != 0;
             result = value >> 1;
@@ -865,10 +910,15 @@ const NOP: Operation = Operation {
 const ORA: Operation = Operation {
     mnemonic: "ORA",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         machine.cpu.accumulator |= machine.read_byte(address);
 
         machine.cpu.set_result_flags(machine.cpu.accumulator);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -925,7 +975,7 @@ const ROL: Operation = Operation {
             machine.cpu.accumulator = result;
         }
         else {
-            let address = addressing_mode.calculate_address(machine);
+            let (address, _page_crossed) = addressing_mode.calculate_address(machine);
             let value = machine.read_byte(address);
             carry_out = (value & 0b10000000) != 0;
             result = value << 1 | carry_in as u8;
@@ -951,7 +1001,7 @@ const ROR: Operation = Operation {
             machine.cpu.accumulator = result;
         }
         else {
-            let address = addressing_mode.calculate_address(machine);
+            let (address, _page_crossed) = addressing_mode.calculate_address(machine);
             let value = machine.read_byte(address);
             carry_out = (value & 0b00000001) != 0;
             result = value >> 1 | (carry_in as u8) << 7;
@@ -990,7 +1040,7 @@ const RTS: Operation = Operation {
 const SBC: Operation = Operation {
     mnemonic: "SBC",
     function: |addressing_mode, machine| {
-        let address = addressing_mode.calculate_address(machine);
+        let (address, page_crossed) = addressing_mode.calculate_address(machine);
         let addend = !machine.read_byte(address); // Invert for subtraction
         let carry_in = machine.cpu.carry_flag;
         let (result, carry_out) = carrying_add(machine.cpu.accumulator, addend, carry_in);
@@ -1000,6 +1050,11 @@ const SBC: Operation = Operation {
         machine.cpu.carry_flag = carry_out;
         machine.cpu.overflow_flag = overflowed;
         machine.cpu.set_result_flags(result);
+
+        // If a page boundary was crossed, delay an extra cycle
+        if page_crossed {
+            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        }
     },
 };
 
@@ -1036,7 +1091,7 @@ const SEI: Operation = Operation {
 const STA: Operation = Operation {
     mnemonic: "STA",
     function: |addressing_mode, machine| {
-    let address = addressing_mode.calculate_address(machine);
+        let (address, _page_crossed) = addressing_mode.calculate_address(machine);
         machine.write_byte(address, machine.cpu.accumulator);
     },
 };
@@ -1046,7 +1101,7 @@ const STA: Operation = Operation {
 const STX: Operation = Operation {
     mnemonic: "STX",
     function: |addressing_mode, machine| {
-    let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         machine.write_byte(address, machine.cpu.register_x);
     },
 };
@@ -1056,7 +1111,7 @@ const STX: Operation = Operation {
 const STY: Operation = Operation {
     mnemonic: "STY",
     function: |addressing_mode, machine| {
-    let address = addressing_mode.calculate_address(machine);
+        let (address, _) = addressing_mode.calculate_address(machine);
         machine.write_byte(address, machine.cpu.register_y);
     },
 };
@@ -1088,7 +1143,6 @@ const TAY: Operation = Operation {
 const TSX: Operation = Operation {
     mnemonic: "TSX",
     function: |_, machine| {
-        // TODO: shouldn't set flags?
         machine.cpu.register_x = machine.cpu.stack_pointer;
 
         machine.cpu.set_result_flags(machine.cpu.register_x);
@@ -1111,7 +1165,6 @@ const TXA: Operation = Operation {
 const TXS: Operation = Operation {
     mnemonic: "TXS",
     function: |_, machine| {
-        // TODO: should set flags?
         machine.cpu.stack_pointer = machine.cpu.register_x;
     },
 };
