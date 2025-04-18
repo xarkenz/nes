@@ -318,7 +318,7 @@ pub struct DeltaModulationChannel {
     sample_pointer: u16,
     sample_bytes_left: u16,
     sample_buffer: Option<u8>,
-    sample_shifter: u8,
+    sample_shifter: Option<u8>,
     sample_shifter_bits_left: u8,
     timer: u16,
     pcm_counter: u8,
@@ -339,7 +339,7 @@ impl DeltaModulationChannel {
             sample_pointer: DMC_POINTER_BASE,
             sample_bytes_left: 0,
             sample_buffer: None,
-            sample_shifter: 0,
+            sample_shifter: None,
             sample_shifter_bits_left: 0,
             timer: 0,
             pcm_counter: 0,
@@ -359,7 +359,6 @@ impl DeltaModulationChannel {
         else if self.sample_bytes_left == 0 {
             self.sample_pointer = self.sample_start_address;
             self.sample_bytes_left = self.sample_length;
-            self.timer = self.period;
             self.dma_is_reload = false;
         }
     }
@@ -375,7 +374,7 @@ impl DeltaModulationChannel {
     pub fn dma_request(&self) -> Option<(u16, bool)> {
         self.dma_requested.then_some((self.sample_pointer, self.dma_is_reload))
     }
-    
+
     pub fn load_sample_buffer(&mut self, dma_read: u8) {
         self.sample_buffer = Some(dma_read);
         self.sample_pointer = DMC_POINTER_BASE | self.sample_pointer.wrapping_add(1);
@@ -417,15 +416,6 @@ impl DeltaModulationChannel {
     pub fn clock_cpu_cycle(&mut self) {
         if self.timer == 0 {
             self.clock_timer();
-            // If the sample shifter is empty, try to grab a new sample byte from the sample buffer
-            if self.sample_shifter_bits_left == 0 {
-                if let Some(buffer) = self.sample_buffer.take() {
-                    // Empty the sample buffer into the sample shifter
-                    self.sample_shifter = buffer;
-                    self.sample_shifter_bits_left = 8;
-                    self.dma_is_reload = true;
-                }
-            }
             // Restart the timer
             self.timer = self.period;
         }
@@ -438,9 +428,9 @@ impl DeltaModulationChannel {
     }
 
     fn clock_timer(&mut self) {
-        if self.sample_shifter_bits_left > 0 {
+        if let Some(shifter) = self.sample_shifter.take() {
             // Process the next bit of the sample
-            if self.sample_shifter & 1 == 0 {
+            if shifter & 1 == 0 {
                 // Decrement the 7-bit PCM counter by 2 unless underflow would occur
                 if self.pcm_counter >= 2 {
                     self.pcm_counter -= 2;
@@ -453,8 +443,23 @@ impl DeltaModulationChannel {
                 }
             }
             // Consume the bit
-            self.sample_shifter >>= 1;
-            self.sample_shifter_bits_left -= 1;
+            self.sample_shifter = Some(shifter >> 1);
+        }
+
+        self.sample_shifter_bits_left = self.sample_shifter_bits_left.saturating_sub(1);
+
+        if self.sample_shifter_bits_left == 0 {
+            // Start a new output cycle
+            self.sample_shifter_bits_left = 8;
+            // Try to grab a new sample byte from the sample buffer
+            if let Some(buffer) = self.sample_buffer.take() {
+                // Empty the sample buffer into the sample shifter
+                self.sample_shifter = Some(buffer);
+                self.dma_is_reload = true;
+            }
+            else {
+                self.sample_shifter = None;
+            }
         }
     }
 
