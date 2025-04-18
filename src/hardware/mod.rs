@@ -1,14 +1,58 @@
 use std::collections::BTreeMap;
 use std::io::Write;
-use instructions::*;
-use ppu::*;
-use cpu::*;
 use crate::loader::Cartridge;
+use instructions::*;
+use cpu::*;
+use ppu::*;
+use apu::*;
 
 pub mod instructions;
-pub mod ppu;
 pub mod cpu;
+pub mod ppu;
+pub mod apu;
 pub mod map;
+
+#[derive(Copy, Clone, Debug)]
+pub struct DelayedFlag<const N: u16> {
+    shifter: u16,
+    current_flag: bool,
+}
+
+impl<const N: u16> DelayedFlag<N> {
+    pub fn new(initial_flag: bool) -> Self {
+        Self {
+            shifter: ((0b10 << N) - 1) * initial_flag as u16,
+            current_flag: initial_flag,
+        }
+    }
+
+    pub fn reset(&mut self, flag: bool) {
+        self.shifter = ((0b10 << N) - 1) * flag as u16;
+        self.current_flag = flag;
+    }
+
+    pub fn get_current(&self) -> bool {
+        self.current_flag
+    }
+
+    pub fn set_current(&mut self, flag: bool) {
+        self.current_flag = flag;
+        self.shifter |= (flag as u16) << N;
+    }
+    
+    pub fn pulse(&mut self, flag: bool) {
+        self.shifter |= (flag as u16) << N;
+    }
+
+    pub fn get_delayed(&self) -> bool {
+        self.shifter & 1 != 0
+    }
+
+    pub fn tick(&mut self) {
+        self.shifter >>= 1;
+        self.shifter |= (self.current_flag as u16) << N;
+    }
+}
 
 pub const OPEN_BUS: u8 = 0x00; // Can be any byte value
 pub const STACK_PAGE: u16 = 0x0100;
@@ -32,15 +76,15 @@ pub struct Machine {
     pub cartridge: Option<Cartridge>,
     pub cpu: CentralProcessingUnit,
     pub ppu: PictureProcessingUnit,
+    pub apu: AudioProcessingUnit,
     internal_ram: Box<[u8; 0x0800]>,
     pub controller_1: [bool; BUTTON_COUNT],
     pub controller_2: [bool; BUTTON_COUNT],
     controller_strobe: bool,
     controller_1_button: usize,
     controller_2_button: usize,
-    debug_printing: bool,
+    pub debug_printing: bool,
     debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
-    cycle_counter: u64,
 }
 
 impl Machine {
@@ -49,6 +93,7 @@ impl Machine {
             cartridge: None,
             cpu: CentralProcessingUnit::new(),
             ppu: PictureProcessingUnit::new(),
+            apu: AudioProcessingUnit::new(),
             internal_ram: Box::new([0; 0x0800]),
             controller_1: [false; BUTTON_COUNT],
             controller_2: [false; BUTTON_COUNT],
@@ -57,7 +102,6 @@ impl Machine {
             controller_2_button: BUTTON_COUNT,
             debug_printing: false,
             debug_disassembly: None,
-            cycle_counter: 0,
         }
     }
 
@@ -90,8 +134,8 @@ impl Machine {
     pub fn reset(&mut self) {
         self.cpu.reset();
         self.ppu.reset();
+        self.apu.reset();
         self.cpu.program_counter = self.read_pair(RESET_VECTOR);
-        self.cycle_counter = 0;
     }
 
     pub fn read_byte(&mut self, address: u16) -> u8 {
@@ -108,6 +152,9 @@ impl Machine {
                     OPEN_BUS
                 }
                 _ => OPEN_BUS
+            }
+            APU_STATUS => {
+                self.apu.read_status()
             }
             CONTROLLER_1_REGISTER => {
                 // TODO: unconnected data lines
@@ -162,11 +209,16 @@ impl Machine {
                 PPU_OAM_ADDRESS => self.ppu.write_oam_address(value),
                 PPU_OAM_DATA => self.ppu.write_oam_data(value),
                 PPU_SCROLL => self.ppu.write_scroll(value),
-                PPU_VRAM_ADDRESS => self.ppu.write_vram_address(value),
+                PPU_VRAM_ADDRESS => if let Some(cartridge) = &mut self.cartridge {
+                    self.ppu.write_vram_address(value, cartridge);
+                },
                 PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge {
                     self.ppu.write_vram_data(value, cartridge);
                 }
                 _ => {}
+            }
+            APU_CHANNEL_START ..= APU_CHANNEL_END => {
+                self.apu.write_channel_register(address, value);
             }
             OAM_DMA_REGISTER => {
                 self.cpu.start_oam_dma(value);
@@ -174,10 +226,16 @@ impl Machine {
                     println!("[OAM DMA started]");
                 }
             }
+            APU_STATUS => {
+                self.apu.write_status(value);
+            }
             CONTROLLER_1_REGISTER => {
                 self.controller_strobe = value & 1 != 0;
                 self.controller_1_button = 0;
                 self.controller_2_button = 0;
+            }
+            APU_FRAME_COUNTER => {
+                self.apu.write_frame_counter(value);
             }
             _ => if let Some(cartridge) = &mut self.cartridge {
                 cartridge.write_cpu_byte(address, value);
@@ -243,40 +301,33 @@ impl Machine {
         (high as u16) << 8 | low as u16
     }
 
-    pub fn handle_irq(&mut self) {
-        self.stack_push_pair(self.cpu.program_counter);
-        self.stack_push_byte(self.cpu.get_status_byte(false));
-        self.cpu.interrupt_disable_flag = true;
-        self.cpu.program_counter = self.read_pair(IRQ_VECTOR);
-    }
-
-    pub fn handle_nmi(&mut self) {
-        self.cpu.pending_instruction = None;
-        self.stack_push_pair(self.cpu.program_counter);
-        self.stack_push_byte(self.cpu.get_status_byte(false));
-        self.cpu.program_counter = self.read_pair(NMI_VECTOR);
-    }
-
     pub fn tick(&mut self) {
         // This tick ordering is important
         self.ppu.tick(self.cartridge.as_mut());
         self.cpu.tick();
+        if self.cpu.cycle_tick_offset == 0 {
+            self.apu.cpu_cycle_tick(self.cpu.is_put_cycle);
+            self.tick_dmc_dma_cycle();
+        }
         if let Some(cartridge) = &mut self.cartridge {
-            cartridge.tick(self.ppu.vram_address);
+            cartridge.tick();
         }
 
         if let Some(instruction) = self.cpu.pending_instruction {
-            let ticks_needed = instruction.cycles_needed() * TICKS_PER_CPU_CYCLE;
-            if ticks_needed <= self.cpu.ticks_available {
-                self.cpu.ticks_available -= ticks_needed;
+            let cycles_needed = instruction.cycles_needed();
+            if self.cpu.delay_cycles == 0 && self.cpu.cycles_available >= cycles_needed {
+                self.cpu.cycles_available -= cycles_needed;
                 self.cpu.pending_instruction = None;
 
                 if let Some(mut disassembly) = self.debug_disassembly.take() {
-                    let program_counter = self.cpu.program_counter;
-                    disassembly.entry(program_counter).or_insert_with(|| (
-                        instruction.size_bytes(),
-                        format!("${program_counter:04X}: {}", instruction.disassemble(self, program_counter)),
-                    ));
+                    let size_bytes = instruction.size_bytes();
+                    if size_bytes > 0 {
+                        let program_counter = self.cpu.program_counter;
+                        disassembly.entry(program_counter).or_insert_with(|| (
+                            size_bytes,
+                            format!("${program_counter:04X}: {}", instruction.disassemble(self, program_counter)),
+                        ));
+                    }
                     self.debug_disassembly = Some(disassembly);
                 }
                 if self.debug_printing {
@@ -288,10 +339,10 @@ impl Machine {
             }
         }
         else if self.ppu.check_vblank_nmi() {
-            self.handle_nmi();
+            self.cpu.pending_instruction = Some(Instruction::meta_nmi());
         }
-        else if !self.cpu.interrupt_disable_flag && self.cartridge.as_mut().is_some_and(Cartridge::check_irq) {
-            self.handle_irq();
+        else if !self.cpu.interrupt_disable_flag && self.check_irq() {
+            self.cpu.pending_instruction = Some(Instruction::meta_irq());
         }
         else if self.cpu.oam_dma_active {
             self.tick_oam_dma();
@@ -301,10 +352,17 @@ impl Machine {
             self.cpu.pending_instruction = Some(Instruction::decode(opcode));
         }
     }
+    
+    fn check_irq(&mut self) -> bool {
+        self.apu.irq_asserted() || self.cartridge.as_mut().is_some_and(Cartridge::check_irq)
+    }
 
     fn tick_oam_dma(&mut self) {
-        // Perform a get/put at the beginning of each CPU cycle
-        if self.cpu.cycle_tick_offset != 0 {
+        // Perform a get/put on each CPU clock cycle
+        if self.cpu.delay_cycles == 0 && self.cpu.cycles_available >= 1 {
+            self.cpu.cycles_available -= 1;
+        }
+        else {
             return;
         }
 
@@ -322,6 +380,32 @@ impl Machine {
         else {
             self.cpu.oam_dma_fetch = Some(self.read_byte(self.cpu.oam_dma_address));
             self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
+        }
+    }
+    
+    fn tick_dmc_dma_cycle(&mut self) {
+        let Some((dma_address, is_reload)) = self.apu.dmc_dma_request() else {
+            // DMC DMA is not currently being requested
+            return;
+        };
+
+        // TODO
+        if !self.cpu.dmc_dma_active {
+            if is_reload == self.cpu.is_put_cycle {
+                self.cpu.dmc_dma_active = true;
+                self.cpu.delay_cycles += 1;
+            }
+        }
+        else if !self.cpu.is_put_cycle {
+            let dma_read = self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
+                cartridge.read_cpu_byte(dma_address)
+            });
+            self.apu.load_dmc_sample_buffer(dma_read);
+            self.cpu.delay_cycles += 1;
+            self.cpu.dmc_dma_active = false;
+        }
+        else {
+            self.cpu.delay_cycles += 1;
         }
     }
 

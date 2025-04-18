@@ -110,7 +110,7 @@ impl Mapper for Mapper001 {
         "Mapper 001 (MMC1)"
     }
 
-    fn tick(&mut self, _ppu_address: u16) {
+    fn tick(&mut self) {
         self.ignore_serial_port_writes = false;
     }
 
@@ -208,5 +208,11 @@ impl Mapper for Mapper001 {
                 self.nametables.write_byte(address, value)
             }
         }
+    }
+
+    fn debug_print_state(&self) {
+        println!("{}:", self.name());
+        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+        println!("    TODO");
     }
 }

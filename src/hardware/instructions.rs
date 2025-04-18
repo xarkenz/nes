@@ -8,6 +8,8 @@ struct Operation {
 
 #[derive(Copy, Clone, Debug)]
 enum AddressingMode {
+    /// This is a meta-operation, and is not part of the instruction set.
+    Meta,
     Implied,
     Accumulator, // A
     Relative, // ${pc+op}
@@ -29,6 +31,7 @@ impl AddressingMode {
     fn format_instruction(&self, mnemonic: &str, machine: &Machine, opcode_address: u16) -> String {
         let operand_address = opcode_address.wrapping_add(1);
         match self {
+            Meta => format!("[{mnemonic}]"),
             Implied => format!("{mnemonic}"),
             Accumulator => format!("{mnemonic} A"),
             Relative => format!("{mnemonic} ${:04X}", opcode_address.wrapping_add(2)
@@ -48,6 +51,8 @@ impl AddressingMode {
 
     fn get_instruction_size(self) -> u16 {
         match self {
+            Meta
+                => 0,
             Implied | Accumulator
                 => 1,
             Relative | Immediate | ZeroPage | ZeroPageX | ZeroPageY | IndirectX | IndirectY
@@ -118,6 +123,14 @@ impl Instruction {
         &INSTRUCTIONS[opcode as usize]
     }
 
+    pub fn meta_irq() -> &'static Self {
+        &IRQ_INSTRUCTION
+    }
+
+    pub fn meta_nmi() -> &'static Self {
+        &NMI_INSTRUCTION
+    }
+
     pub fn opcode(&self) -> u8 {
         self.opcode
     }
@@ -125,7 +138,7 @@ impl Instruction {
     pub fn mnemonic(&self) -> &'static str {
         self.operation.mnemonic
     }
-    
+
     pub fn size_bytes(&self) -> u16 {
         self.addressing_mode.get_instruction_size()
     }
@@ -151,6 +164,10 @@ impl PartialEq for Instruction {
         self as *const _ == other as *const _
     }
 }
+
+// Meta-instructions
+const IRQ_INSTRUCTION: Instruction = Instruction::new(0x00, IRQ, Meta, 7);
+const NMI_INSTRUCTION: Instruction = Instruction::new(0x00, NMI, Meta, 7);
 
 // Cycle counts are from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
 const INSTRUCTIONS: [Instruction; 0x100] = [
@@ -434,18 +451,40 @@ fn process_branch(machine: &mut Machine) {
     // Offset is sign-extended
     machine.cpu.program_counter = machine.cpu.program_counter.wrapping_add_signed(offset as i8 as i16);
     // Delay 1 cycle since the branch is being taken
-    machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+    machine.cpu.delay_cycles += 1;
     // If a page boundary was crossed, delay an extra cycle
     if machine.cpu.program_counter & 0xFF00 != start_page {
-        machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+        machine.cpu.delay_cycles += 1;
     }
 }
+
+// Interrupt Request
+// Meta
+const IRQ: Operation = Operation {
+    mnemonic: "IRQ",
+    function: |_, machine| {
+        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_byte(machine.cpu.get_status_byte(false));
+        machine.cpu.interrupt_disable_flag = true;
+        machine.cpu.program_counter = machine.read_pair(IRQ_VECTOR);
+    },
+};
+
+// Non-Maskable Interrupt
+// Meta
+const NMI: Operation = Operation {
+    mnemonic: "NMI",
+    function: |_, machine| {
+        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_byte(machine.cpu.get_status_byte(false));
+        machine.cpu.program_counter = machine.read_pair(NMI_VECTOR);
+    },
+};
 
 const UNMAPPED: Operation = Operation {
     mnemonic: "???",
     function: |_, _| {
-        // Uh oh
-        // panic!("yeah no can do sorry");
+        panic!("illegal instruction");
     },
 };
 
@@ -467,7 +506,7 @@ const ADC: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -484,7 +523,7 @@ const AND: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -679,7 +718,7 @@ const CMP: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -759,7 +798,7 @@ const EOR: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -832,7 +871,7 @@ const LDA: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -849,7 +888,7 @@ const LDX: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -866,7 +905,7 @@ const LDY: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -917,7 +956,7 @@ const ORA: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };
@@ -1053,7 +1092,7 @@ const SBC: Operation = Operation {
 
         // If a page boundary was crossed, delay an extra cycle
         if page_crossed {
-            machine.cpu.delay_ticks += TICKS_PER_CPU_CYCLE;
+            machine.cpu.delay_cycles += 1;
         }
     },
 };

@@ -75,4 +75,10 @@ impl Mapper for Mapper000 {
             }
         }
     }
+
+    fn debug_print_state(&self) {
+        println!("{}:", self.name());
+        println!("    PRG-ROM chunks: {}", if self.prg_chunk_1.is_some() { 2 } else { 1 });
+        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+    }
 }

@@ -118,6 +118,10 @@ pub fn main() {
             machine.reset();
             println!("Console reset.");
         }
+        else if command.eq_ignore_ascii_case("Tick") {
+            machine.tick();
+            println!("Tick completed.");
+        }
         else if command.eq_ignore_ascii_case("Step") {
             machine.debug_step();
             println!("Step completed.");
@@ -153,14 +157,25 @@ pub fn main() {
             let address = match parse_int(argument) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
             while !keyboard_interrupt() && machine.cpu.program_counter != address {
                 machine.debug_step();
             }
-            println!("Breakpoint reached.");
+            if machine.cpu.program_counter == address {
+                println!("Breakpoint reached.");
+            }
+        }
+        else if command.eq_ignore_ascii_case("StepNMI") {
+            let nmi_handler_address = machine.read_pair(NMI_VECTOR);
+            while !keyboard_interrupt() && machine.cpu.program_counter != nmi_handler_address {
+                machine.tick();
+            }
+            if machine.cpu.program_counter == nmi_handler_address {
+                println!("NMI detected. (PC = ${nmi_handler_address:04X})");
+            }
         }
         else if command.eq_ignore_ascii_case("NextFrame") {
             while !machine.ppu.is_entering_vblank() {
@@ -169,23 +184,37 @@ pub fn main() {
             machine.tick();
             println!("Entered vblank of next frame.");
         }
-        else if command.eq_ignore_ascii_case("StartCounter") {
+        else if command.eq_ignore_ascii_case("ResetStats") {
             machine.cpu.debug_cycle_counter = 0;
             machine.ppu.debug_cycle_counter = 0;
-            println!("Reset cycle counters to zero.");
+            println!("Reset counters to zero.");
         }
-        else if command.eq_ignore_ascii_case("Counter") {
+        else if command.eq_ignore_ascii_case("Stats") {
             println!("CPU cycles: {}", machine.cpu.debug_cycle_counter);
             println!("PPU cycles: {}", machine.ppu.debug_cycle_counter);
         }
-        else if command.eq_ignore_ascii_case("State") {
+        else if command.eq_ignore_ascii_case("CPU") {
             machine.cpu.debug_print_state();
+        }
+        else if command.eq_ignore_ascii_case("PPU") {
+            machine.ppu.debug_print_state();
+        }
+        else if command.eq_ignore_ascii_case("APU") {
+            machine.apu.debug_print_state();
+        }
+        else if command.eq_ignore_ascii_case("Mapper") {
+            if let Some(cartridge) = &machine.cartridge {
+                cartridge.debug_print_mapper_state();
+            }
+            else {
+                println!("Error: No cartridge loaded.");
+            }
         }
         else if command.eq_ignore_ascii_case("SetPC") {
             let address = match parse_int(argument) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
@@ -195,7 +224,7 @@ pub fn main() {
             let address = match parse_int(argument) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
@@ -206,7 +235,7 @@ pub fn main() {
             let address = match parse_int(argument) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
@@ -221,14 +250,14 @@ pub fn main() {
             let address = match parse_int(address.trim_end()) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
             let value = match parse_int(value.trim_start()) {
                 Ok(value) => value,
                 Err(error) => {
-                    eprintln!("Error: invalid byte value: {error}");
+                    eprintln!("Error: Invalid byte value: {error}");
                     continue;
                 }
             };
@@ -238,20 +267,20 @@ pub fn main() {
         }
         else if command.eq_ignore_ascii_case("SetPair") {
             let Some((address, value)) = argument.split_once('=') else {
-                eprintln!("Error: expected '=' for assignment.");
+                eprintln!("Error: Expected '=' for assignment.");
                 continue;
             };
             let address = match parse_int(address.trim_end()) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
             let value = match parse_int(value.trim_start()) {
                 Ok(value) => value,
                 Err(error) => {
-                    eprintln!("Error: invalid pair value: {error}");
+                    eprintln!("Error: Invalid pair value: {error}");
                     continue;
                 }
             };
@@ -263,7 +292,7 @@ pub fn main() {
             let address = match parse_int(argument) {
                 Ok(address) => address,
                 Err(error) => {
-                    eprintln!("Error: invalid address: {error}");
+                    eprintln!("Error: Invalid address: {error}");
                     continue;
                 }
             };
@@ -330,9 +359,36 @@ pub fn main() {
             }
             println!();
         }
+        else if command.eq_ignore_ascii_case("Sprite") {
+            let index = match parse_int::<u8>(argument) {
+                Ok(index) if index & 0b11000000 == 0 => index,
+                Ok(..) => {
+                    eprintln!("Error: Sprite index out of range.");
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("Error: Invalid sprite index: {error}");
+                    continue;
+                }
+            };
+            let address = (index << 2) as usize;
+            let byte_0 = machine.ppu.primary_oam[address + 0];
+            let byte_1 = machine.ppu.primary_oam[address + 1];
+            let byte_2 = machine.ppu.primary_oam[address + 2];
+            let byte_3 = machine.ppu.primary_oam[address + 3];
+            println!("Sprite {index}:");
+            println!("    OAM at ${address:02X}: {byte_0:02X} {byte_1:02X} {byte_2:02X} {byte_3:02X}");
+            println!("    Screen X: {}", byte_3);
+            println!("    Screen Y: {}", byte_0 as u16 + 1);
+            println!("    Tile number: ${:02X}", byte_1);
+            println!("    Palette: {}", (byte_2 & 0b11) | 0b100);
+            println!("    Priority: {}", if byte_2 & 0b100000 == 0 { "In front of background" } else { "Behind background" });
+            println!("    Flip X: {}", byte_2 & 0b1000000 != 0);
+            println!("    Flip Y: {}", byte_2 & 0b10000000 != 0);
+        }
         else if command.eq_ignore_ascii_case("PTables") {
             let Some(cartridge) = &mut machine.cartridge else {
-                println!("Error: no cartridge loaded.");
+                println!("Error: No cartridge loaded.");
                 continue;
             };
             
@@ -368,10 +424,40 @@ pub fn main() {
             
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X4;
-            let mut window = Window::new("NES CHR View", WIDTH, HEIGHT, window_options).unwrap();
+            let mut window = Window::new("NES Pattern Tables", WIDTH, HEIGHT, window_options).unwrap();
             window.set_target_fps(10);
             while window.is_open() {
                 window.update_with_buffer(&buffer, WIDTH, HEIGHT).unwrap();
+            }
+        }
+        else if command.eq_ignore_ascii_case("NTables") {
+            let Some(cartridge) = &mut machine.cartridge else {
+                println!("Error: No cartridge loaded.");
+                continue;
+            };
+
+            let mut buffer = vec![0_u32; ppu::SCREEN_WIDTH * ppu::SCREEN_HEIGHT * 4];
+            for (pos, sliver) in buffer.chunks_exact_mut(8).enumerate() {
+                let x = ((pos & 0b11111) as u8) << 3;
+                let y = ((pos >> 6) % ppu::SCREEN_HEIGHT) as u8;
+                let mut base_nametable_address = 0x2000;
+                if pos & 0b100000 != 0 {
+                    base_nametable_address |= 0x0400;
+                }
+                if pos >> 6 >= ppu::SCREEN_HEIGHT {
+                    base_nametable_address |= 0x0800;
+                }
+                let computed_sliver = machine.ppu.get_tile_sliver(base_nametable_address, x, y, cartridge)
+                    .map(|index| machine.ppu.get_palette_color_rgb(index));
+                sliver.copy_from_slice(&computed_sliver);
+            }
+
+            let mut window_options = WindowOptions::default();
+            window_options.scale = Scale::X1;
+            let mut window = Window::new("NES Nametables", ppu::SCREEN_WIDTH * 2, ppu::SCREEN_HEIGHT * 2, window_options).unwrap();
+            window.set_target_fps(10);
+            while window.is_open() {
+                window.update_with_buffer(&buffer, ppu::SCREEN_WIDTH * 2, ppu::SCREEN_HEIGHT * 2).unwrap();
             }
         }
         else if command.eq_ignore_ascii_case("Play") {
@@ -406,7 +492,7 @@ pub fn main() {
             }
         }
         else {
-            println!("Error: unknown command: {}", command);
+            println!("Error: Unknown command: {}", command);
         }
     }
 }

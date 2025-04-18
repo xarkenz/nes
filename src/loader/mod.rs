@@ -96,8 +96,8 @@ impl Cartridge {
         &self.header
     }
     
-    pub fn tick(&mut self, ppu_address: u16) {
-        self.mapper.tick(ppu_address);
+    pub fn tick(&mut self) {
+        self.mapper.tick();
     }
     
     pub fn check_irq(&mut self) -> bool {
@@ -124,6 +124,10 @@ impl Cartridge {
 
     pub fn write_ppu_byte(&mut self, address: u16, value: u8) {
         self.mapper.write_ppu_byte(address & 0x3FFF, value)
+    }
+    
+    pub fn debug_print_mapper_state(&self) {
+        self.mapper.debug_print_state();
     }
 }
 

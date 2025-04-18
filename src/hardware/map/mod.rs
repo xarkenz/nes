@@ -7,9 +7,8 @@ mod mapper004;
 pub trait Mapper {
     fn name(&self) -> &'static str;
 
-    fn tick(&mut self, ppu_address: u16) {
+    fn tick(&mut self) {
         // No-op by default
-        let _ = ppu_address;
     }
 
     fn check_irq(&mut self) -> bool {
@@ -30,6 +29,8 @@ pub trait Mapper {
         // No-op by default
         let _ = (address, value);
     }
+    
+    fn debug_print_state(&self);
 }
 
 pub const PRG_CHUNK_SIZE: usize = 0x4000;
@@ -46,6 +47,15 @@ pub enum NametableMirroring {
     Horizontal,
     /// PPU A10 -> CIRAM A10
     Vertical,
+}
+
+impl std::fmt::Display for NametableMirroring {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            NametableMirroring::Horizontal => write!(f, "Horizontal (PPU A11 -> CIRAM A10)"),
+            NametableMirroring::Vertical => write!(f, "Vertical (PPU A10 -> CIRAM A10)"),
+        }
+    }
 }
 
 pub struct BuiltinNametables {

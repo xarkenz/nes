@@ -2,6 +2,23 @@ use super::*;
 
 pub const PRG_RAM_SIZE: usize = 0x2000;
 
+#[derive(Copy, Clone, PartialEq, Debug)]
+enum IRQTrigger {
+    /// IRQ is triggered if counter is 0 after decrementing/reloading.
+    Level,
+    /// IRQ is triggered if counter newly becomes 0 while decrementing/reloading.
+    Edge,
+}
+
+impl std::fmt::Display for IRQTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            IRQTrigger::Level => write!(f, "Level"),
+            IRQTrigger::Edge => write!(f, "Edge"),
+        }
+    }
+}
+
 pub struct Mapper004 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
@@ -15,9 +32,12 @@ pub struct Mapper004 {
     chr_bank_mask: u8,
     prg_bank_indices: [(usize, usize); 4],
     chr_bank_indices: [(usize, usize); 8],
+    irq_trigger: IRQTrigger,
     irq_enabled: bool,
     irq_counter: u8,
     irq_reload_value: u8,
+    irq_reload_requested: bool,
+    irq_asserted: bool,
     irq_triggered: bool,
     ticks_since_a12_high: u16,
 }
@@ -47,9 +67,15 @@ impl Mapper004 {
             // too lazy to initialize explicitly. plus they're being updated immediately after
             prg_bank_indices: Default::default(),
             chr_bank_indices: Default::default(),
+            irq_trigger: match header.submapper_number {
+                2 => IRQTrigger::Edge,
+                _ => IRQTrigger::Level
+            },
             irq_enabled: false,
             irq_counter: 0,
             irq_reload_value: 0,
+            irq_reload_requested: false,
+            irq_asserted: false,
             irq_triggered: false,
             ticks_since_a12_high: 0,
         };
@@ -62,7 +88,7 @@ impl Mapper004 {
     fn update_prg_banks(&mut self) {
         // I love pointlessly doing branchless programming
         let swappable_bank_index = (self.prg_bank_mode_1 as usize) << 1;
-        let fixed_bank_index = 2 - swappable_bank_index;
+        let fixed_bank_index = swappable_bank_index ^ 0b10;
         
         self.prg_bank_indices[swappable_bank_index] = self.prg_indices(self.bank_registers[6]);
         self.prg_bank_indices[1] = self.prg_indices(self.bank_registers[7]);
@@ -80,7 +106,7 @@ impl Mapper004 {
     fn update_chr_banks(&mut self) {
         // I love pointlessly doing branchless programming
         let big_chunks_offset = (self.chr_bank_mode_1 as usize) << 2;
-        let small_chunks_offset = 4 - big_chunks_offset;
+        let small_chunks_offset = big_chunks_offset ^ 0b100;
 
         self.chr_bank_indices[big_chunks_offset + 0] = self.chr_indices(self.bank_registers[0] & !1);
         self.chr_bank_indices[big_chunks_offset + 1] = self.chr_indices(self.bank_registers[0] | 1);
@@ -105,16 +131,27 @@ impl Mapper004 {
             return;
         }
 
-        if self.ticks_since_a12_high > 3 * crate::hardware::cpu::TICKS_PER_CPU_CYCLE {
+        if self.ticks_since_a12_high > 4 * crate::hardware::cpu::TICKS_PER_CPU_CYCLE {
             // End of scanline detected, decrement counter
-            if self.irq_counter == 0 {
+            let previous_irq_counter = self.irq_counter;
+            if self.irq_counter == 0 || self.irq_reload_requested {
                 self.irq_counter = self.irq_reload_value;
+                self.irq_reload_requested = false;
             }
             else {
                 self.irq_counter -= 1;
             }
-            // println!("counter: {}", self.irq_counter);
-            self.irq_triggered |= self.irq_enabled && self.irq_counter == 0;
+            // println!("MMC3 counter: ${address:04X} => {}", self.irq_counter);
+            if self.irq_enabled {
+                let trigger_condition = match self.irq_trigger {
+                    IRQTrigger::Level => self.irq_counter == 0,
+                    IRQTrigger::Edge => self.irq_counter == 0 && previous_irq_counter != 0,
+                };
+                if trigger_condition {
+                    self.irq_triggered |= !self.irq_asserted;
+                    self.irq_asserted = true;
+                }
+            }
         }
 
         self.ticks_since_a12_high = 0;
@@ -126,8 +163,7 @@ impl Mapper for Mapper004 {
         "Mapper 004 (MMC3/MMC6)"
     }
 
-    fn tick(&mut self, ppu_address: u16) {
-        self.check_ppu_address(ppu_address);
+    fn tick(&mut self) {
         self.ticks_since_a12_high = self.ticks_since_a12_high.saturating_add(1);
     }
 
@@ -198,7 +234,7 @@ impl Mapper for Mapper004 {
                     self.irq_reload_value = value;
                 }
                 else {
-                    self.irq_counter = 0;
+                    self.irq_reload_requested = true;
                 }
             }
             0xE000 ..= 0xFFFF => {
@@ -206,6 +242,7 @@ impl Mapper for Mapper004 {
                 self.irq_enabled = address & 1 != 0;
                 if !self.irq_enabled {
                     self.irq_triggered = false;
+                    self.irq_asserted = false;
                 }
             }
             _ => {}
@@ -239,5 +276,21 @@ impl Mapper for Mapper004 {
                 self.nametables.write_byte(address, value)
             }
         }
+    }
+
+    fn debug_print_state(&self) {
+        println!("{}:", self.name());
+        let bank_select = self.register_select as u8
+            | (self.prg_bank_mode_1 as u8) << 6
+            | (self.chr_bank_mode_1 as u8) << 7;
+        println!("                  CP---RRR");
+        println!("    Bank select: %{:08b}", bank_select);
+        println!("    Bank registers: {:?}", self.bank_registers);
+        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+        println!("    IRQ trigger type: {}", self.irq_trigger);
+        println!("    IRQ enabled: {}", self.irq_enabled);
+        println!("    IRQ reload value: {}", self.irq_reload_value);
+        println!("    IRQ reload requested: {}", self.irq_reload_requested);
+        println!("    IRQ counter: {}", self.irq_counter);
     }
 }

@@ -1,42 +1,5 @@
+use crate::hardware::DelayedFlag;
 use crate::loader::{Cartridge, ColorConverter};
-
-#[derive(Copy, Clone, Debug)]
-pub struct DelayedFlag<const N: u16> {
-    shifter: u16,
-    current_flag: bool,
-}
-
-impl<const N: u16> DelayedFlag<N> {
-    pub fn new(initial_flag: bool) -> Self {
-        Self {
-            shifter: ((0b10 << N) - 1) * initial_flag as u16,
-            current_flag: initial_flag,
-        }
-    }
-    
-    pub fn reset(&mut self, flag: bool) {
-        self.shifter = ((0b10 << N) - 1) * flag as u16;
-        self.current_flag = flag;
-    }
-
-    pub fn get_current(&self) -> bool {
-        self.current_flag
-    }
-
-    pub fn set_current(&mut self, flag: bool) {
-        self.current_flag = flag;
-        self.shifter |= (flag as u16) << N;
-    }
-
-    pub fn get_delayed(&self) -> bool {
-        self.shifter & 1 != 0
-    }
-
-    pub fn tick(&mut self) {
-        self.shifter >>= 1;
-        self.shifter |= (self.current_flag as u16) << N;
-    }
-}
 
 pub const PPU_CONTROL: u16 = 0;
 pub const PPU_MASK: u16 = 1;
@@ -61,18 +24,20 @@ const GREYSCALE_COLOR_MASK: u16 = 0b110000;
 const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const SECONDARY_OAM_SIZE: u8 = 32;
-const OAM_BYTE_2_MASK: u8 = 0b11100011;
+pub const OAM_BYTE_2_MASK: u8 = 0b11100011;
 const NMI_TRIGGER_DELAY: u16 = 2; // Just needs to delay NMI by one instruction I think
 const RENDER_ENABLE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
+    debug_ppu_control: u8,
     vram_address_increment: u16,
     sprite_ptable_address: u16,
     background_ptable_address: u16,
     tall_sprites: bool,
     vblank_nmi_enabled: bool,
     // PPU_MASK
+    debug_ppu_mask: u8,
     mask_background: bool,
     mask_sprites: bool,
     render_background_flag: DelayedFlag<RENDER_ENABLE_DELAY>,
@@ -83,6 +48,7 @@ pub struct PictureProcessingUnit {
     vblank_flag: bool,
     next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
     sprite_0_hit: bool,
+    sprite_0_hit_timer: u8,
     sprite_overflow: bool,
     // PPU_OAM_ADDRESS
     oam_address: u8,
@@ -103,7 +69,7 @@ pub struct PictureProcessingUnit {
     vblank_nmi_triggered: DelayedFlag<NMI_TRIGGER_DELAY>, // true if actively pulling /NMI low
     sliver_shifter: [u8; 16], // epic variable name
     pub palette_ram: [u8; 32],
-    primary_oam: Box<[u8; 0x100]>,
+    pub primary_oam: Box<[u8; 0x100]>,
     secondary_oam_address: u8,
     secondary_oam: [u8; SECONDARY_OAM_SIZE as usize],
     sprite_evaluation_finished: bool,
@@ -117,11 +83,13 @@ pub struct PictureProcessingUnit {
 impl PictureProcessingUnit {
     pub fn new() -> Self {
         Self {
+            debug_ppu_control: 0,
             vram_address_increment: 1,
             sprite_ptable_address: 0,
             background_ptable_address: 0,
             tall_sprites: false,
             vblank_nmi_enabled: false,
+            debug_ppu_mask: 0,
             mask_background: false,
             mask_sprites: false,
             render_background_flag: DelayedFlag::new(false),
@@ -131,6 +99,7 @@ impl PictureProcessingUnit {
             vblank_flag: false,
             next_vblank_flag: false,
             sprite_0_hit: false,
+            sprite_0_hit_timer: 0,
             sprite_overflow: false,
             oam_address: 0,
             fine_scroll_x: 0,
@@ -161,11 +130,13 @@ impl PictureProcessingUnit {
     pub fn reset(&mut self) {
         self.resetting = true;
 
+        self.debug_ppu_control = 0;
         self.vram_address_increment = 1;
         self.sprite_ptable_address = 0;
         self.background_ptable_address = 0;
         self.tall_sprites = false;
         self.vblank_nmi_enabled = false;
+        self.debug_ppu_mask = 0;
         self.mask_background = false;
         self.mask_sprites = false;
         self.render_background_flag.reset(false);
@@ -187,6 +158,7 @@ impl PictureProcessingUnit {
             return;
         }
 
+        self.debug_ppu_control = value;
         self.origin_vram_address = (self.origin_vram_address & !0b11_00000_00000)
             | ((value & 0b11) as u16) << 10;
         self.vram_address_increment = if value & 0b100 != 0 { 32 } else { 1 };
@@ -206,6 +178,7 @@ impl PictureProcessingUnit {
             return;
         }
 
+        self.debug_ppu_mask = value;
         self.color_mask = if value & 0b1 != 0 { GREYSCALE_COLOR_MASK } else { NORMAL_COLOR_MASK };
         self.mask_background = value & 0b10 == 0;
         self.mask_sprites = value & 0b100 == 0;
@@ -270,7 +243,7 @@ impl PictureProcessingUnit {
         }
     }
 
-    pub fn write_vram_address(&mut self, value: u8) {
+    pub fn write_vram_address(&mut self, value: u8, cartridge: &mut Cartridge) {
         if self.resetting {
             return;
         }
@@ -279,6 +252,7 @@ impl PictureProcessingUnit {
             self.origin_vram_address = (self.origin_vram_address & 0xFF00)
                 | value as u16;
             self.vram_address = self.origin_vram_address;
+            self.update_address_lines(self.vram_address, cartridge);
             self.write_latch = false;
         }
         else {
@@ -303,6 +277,7 @@ impl PictureProcessingUnit {
             }
         };
         self.vram_address = self.vram_address.wrapping_add(self.vram_address_increment);
+        self.update_address_lines(self.vram_address, cartridge);
         value
     }
 
@@ -320,6 +295,13 @@ impl PictureProcessingUnit {
             }
         }
         self.vram_address = self.vram_address.wrapping_add(self.vram_address_increment);
+        self.update_address_lines(self.vram_address, cartridge);
+    }
+    
+    fn update_address_lines(&mut self, address: u16, cartridge: &mut Cartridge) {
+        // Some cartridge mappers rely on detecting VRAM address bit 12 going high to count
+        // scanlines, so we'll just cheat a bit and do a garbage read
+        cartridge.read_ppu_byte(address);
     }
 
     pub fn check_vblank_nmi(&mut self) -> bool {
@@ -349,6 +331,10 @@ impl PictureProcessingUnit {
         self.compute_background_sliver(&mut sliver, vram_address, cartridge);
         sliver
     }
+    
+    pub fn get_palette_color_rgb(&self, index: u8) -> u32 {
+        self.get_color_rgb(self.palette_ram[index as usize])
+    }
 
     pub fn get_color_rgb(&self, index: u8) -> u32 {
         self.color_converter.get_rgb(self.color_emphasis | (index as u16 & self.color_mask))
@@ -363,13 +349,18 @@ impl PictureProcessingUnit {
 
         // Simulate hardware multiplexing to replicate quirky PPU_STATUS read behavior
         self.vblank_flag = self.next_vblank_flag;
+        self.sprite_0_hit_timer >>= 1;
 
         // Handle rendering if either background or sprites are enabled
-        if self.render_background_flag.get_delayed() || self.render_sprites_flag.get_delayed() {
-            if let Some(cartridge) = cartridge {
-                self.tick_rendering(cartridge);
-            }
+        if (self.render_background_flag.get_delayed() || self.render_sprites_flag.get_delayed()) && cartridge.is_some() {
+            self.tick_rendering(cartridge.unwrap());
         }
+        else if self.dot < 256 && self.dot & 0b111 == 0 {
+            // Draw a sliver of the universal background color instead
+            self.draw_sliver();
+        }
+        
+        self.sprite_0_hit |= self.sprite_0_hit_timer & 1 != 0;
 
         // On certain cycles, update status flags and/or trigger NMI
         match (self.scanline, self.dot) {
@@ -431,11 +422,15 @@ impl PictureProcessingUnit {
     fn tick_rendering(&mut self, cartridge: &mut Cartridge) {
         // Update VRAM address as necessary for tile fetches
         match (self.scanline, self.dot) {
-            (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 8 ..= 256) if self.dot & 0b111 == 0 => {
-                self.draw_sliver();
-                self.load_next_sliver(cartridge);
-                self.increment_coarse_x();
-                if self.dot == 256 {
+            (0 ..= LAST_VISIBLE_SCANLINE | PRE_RENDER_SCANLINE, 0 ..= 256) if self.dot & 0b111 == 0 => {
+                if self.dot > 0 {
+                    self.load_next_sliver(cartridge);
+                    self.increment_coarse_x();
+                }
+                if self.dot < 256 {
+                    self.draw_sliver();
+                }
+                else {
                     self.increment_fine_y();
                 }
             }
@@ -511,13 +506,18 @@ impl PictureProcessingUnit {
                         (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(1);
                     }
                 }
-                260 => {
+                257 => {
                     // Screw sprite output units, let's just load a buffer since it's basically
                     // invisible behavior to the CPU anyway
                     self.load_sprite_output_buffer(self.scanline as u8, cartridge);
                 }
                 _ => {}
             }
+        }
+        else if self.scanline == PRE_RENDER_SCANLINE && self.dot == 257 {
+            // Load the sprite output buffer on the pre-render scanline as well, though only for the
+            // purpose of providing proper address line updates to cartridge mappers
+            self.load_sprite_output_buffer(LAST_VISIBLE_SCANLINE as u8, cartridge);
         }
     }
 
@@ -595,8 +595,7 @@ impl PictureProcessingUnit {
             return;
         }
 
-        // The current dot is at the pixel immediately after the sliver being drawn, hence minus 8
-        let base_pixel_x = self.dot as usize - 8;
+        let base_pixel_x = self.dot as usize;
         let base_pixel_index = self.scanline as usize * SCREEN_WIDTH + base_pixel_x;
         let shift_amount = self.fine_scroll_x as usize;
 
@@ -630,8 +629,8 @@ impl PictureProcessingUnit {
                     else {
                         // Check for sprite 0 hit (happens if opaque pixel of sprite 0 is being
                         // compared with opaque pixel of background)
-                        if is_sprite_0 && base_pixel_x >= 2 {
-                            self.sprite_0_hit = true;
+                        if is_sprite_0 && (base_pixel_x != 248 || offset_x != 7) {
+                            self.sprite_0_hit_timer |= 1 << offset_x;
                         }
                         // Overwrite background pixel unless the "behind background" flag is set
                         if !behind_background {
@@ -705,19 +704,16 @@ impl PictureProcessingUnit {
             let flip_y = attributes & 0b10000000 != 0;
 
             let top_y = sprite_data[0];
-            if top_y >= 0xEF {
+            if top_y > y {
                 // This sprite slot is empty, which means there shouldn't be any more sprites on
                 // this scanline in theory
-                if sprite_index == 0 {
-                    // There are no sprites on this scanline at all...
-                    // Some cartridge mappers rely on getting a read with address bit 12 high to
-                    // count scanlines, so we'll just cheat a bit and do a garbage read
-                    if self.tall_sprites {
-                        cartridge.read_ppu_byte((sprite_data[1] as u16 & 1) << 12);
-                    }
-                    else {
-                        cartridge.read_ppu_byte(self.sprite_ptable_address);
-                    }
+                // For the sake of cartridge mappers doing address line shenanigans, make sure the
+                // address lines get updated for at least one of the empty slots
+                if self.tall_sprites {
+                    self.update_address_lines((sprite_data[1] as u16 & 1) << 12, cartridge);
+                }
+                else {
+                    self.update_address_lines(self.sprite_ptable_address, cartridge);
                 }
                 break;
             }
@@ -771,5 +767,19 @@ impl PictureProcessingUnit {
                 }
             }
         }
+    }
+    
+    pub fn debug_print_state(&self) {
+        println!("PPU state:");
+        println!("    Position: (scanline {}, dot {})", self.scanline, self.dot);
+        println!("              VPHBSINN");
+        println!("    Control: %{:08b}", self.debug_ppu_control);
+        println!("           BGRsbMmG");
+        println!("    Mask: %{:08b}", self.debug_ppu_mask);
+        let status = (self.vblank_flag as u8) << 7
+            | (self.sprite_0_hit as u8) << 6
+            | (self.sprite_overflow as u8) << 5;
+        println!("             VSO-----");
+        println!("    Status: %{:08b}", status);
     }
 }
