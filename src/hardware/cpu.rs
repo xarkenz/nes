@@ -4,6 +4,7 @@ pub const OAM_DMA_REGISTER: u16 = 0x4014;
 pub const TICKS_PER_CPU_CYCLE: u16 = 3;
 
 pub struct CentralProcessingUnit {
+    pub is_halted: bool,
     pub program_counter: u16,
     pub accumulator: u8,
     pub register_x: u8,
@@ -30,6 +31,7 @@ pub struct CentralProcessingUnit {
 impl CentralProcessingUnit {
     pub fn new() -> Self {
         Self {
+            is_halted: false,
             program_counter: 0,
             accumulator: 0,
             register_x: 0,
@@ -56,6 +58,7 @@ impl CentralProcessingUnit {
     
     pub fn reset(&mut self) {
         // Resetting PC is handled elsewhere
+        self.is_halted = false;
         self.interrupt_disable_flag = true;
         self.stack_pointer = self.stack_pointer.wrapping_sub(3);
         self.oam_dma_active = false;
@@ -105,7 +108,7 @@ impl CentralProcessingUnit {
             self.cycle_tick_offset = 0;
 
             if self.delay_cycles == 0 {
-                self.cycles_available += 1;
+                self.cycles_available += !self.is_halted as u16;
             }
             else {
                 self.delay_cycles -= 1;
@@ -118,6 +121,7 @@ impl CentralProcessingUnit {
 
     pub fn debug_print_state(&self) {
         println!("CPU state:");
+        println!("    Halted: {}", self.is_halted);
         println!("    PC: ${:04X}", self.program_counter);
         println!("    SP: $01{:02X}", self.stack_pointer);
         println!("    A: ${:02X}", self.accumulator);
