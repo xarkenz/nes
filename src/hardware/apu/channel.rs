@@ -355,13 +355,11 @@ impl DeltaModulationChannel {
         if !enable {
             self.sample_bytes_left = 0;
             self.sample_buffer = None;
-            self.dma_requested = false;
         }
         else if self.sample_bytes_left == 0 {
             self.sample_pointer = self.sample_start_address;
             self.sample_bytes_left = self.sample_length;
             self.timer = self.period;
-            self.dma_requested = true;
             self.dma_is_reload = false;
         }
     }
@@ -415,9 +413,11 @@ impl DeltaModulationChannel {
             _ => unreachable!()
         }
     }
-    
+
     pub fn clock_cpu_cycle(&mut self) {
         if self.timer == 0 {
+            self.clock_timer();
+            // If the sample shifter is empty, try to grab a new sample byte from the sample buffer
             if self.sample_shifter_bits_left == 0 {
                 if let Some(buffer) = self.sample_buffer.take() {
                     // Empty the sample buffer into the sample shifter
@@ -426,12 +426,12 @@ impl DeltaModulationChannel {
                     self.dma_is_reload = true;
                 }
             }
-            self.clock_timer();
+            // Restart the timer
             self.timer = self.period;
         }
         self.timer -= 1;
 
-        // Request DMA to fetch the next byte of the sample, if applicable
+        // If the sample buffer needs to be loaded, request DMA to fetch the next byte of the sample
         if self.sample_buffer.is_none() && self.sample_bytes_left > 0 {
             self.dma_requested = true;
         }
@@ -441,12 +441,16 @@ impl DeltaModulationChannel {
         if self.sample_shifter_bits_left > 0 {
             // Process the next bit of the sample
             if self.sample_shifter & 1 == 0 {
-                // Perform a saturating decrement on the 7-bit PCM counter
-                self.pcm_counter = self.pcm_counter.saturating_sub(1);
+                // Decrement the 7-bit PCM counter by 2 unless underflow would occur
+                if self.pcm_counter >= 2 {
+                    self.pcm_counter -= 2;
+                }
             }
             else {
-                // Perform a saturating increment on the 7-bit PCM counter
-                self.pcm_counter = (self.pcm_counter << 1).saturating_add(0b10) >> 1;
+                // Increment the 7-bit PCM counter by 2 unless overflow would occur
+                if self.pcm_counter <= 125 {
+                    self.pcm_counter += 2;
+                }
             }
             // Consume the bit
             self.sample_shifter >>= 1;
