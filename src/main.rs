@@ -118,6 +118,10 @@ pub fn main() {
             machine.reset();
             println!("Console reset.");
         }
+        else if command.eq_ignore_ascii_case("Warmup") {
+            machine.ppu.resetting = false;
+            println!("PPU forced out of warm-up phase.");
+        }
         else if command.eq_ignore_ascii_case("Tick") {
             machine.tick();
             println!("Tick completed.");
@@ -324,7 +328,7 @@ pub fn main() {
                 println!("Debug disassembly canceled.");
                 continue;
             }
-            
+
             let mut file = match std::fs::File::create(argument) {
                 Ok(file) => file,
                 Err(error) => {
@@ -338,7 +342,7 @@ pub fn main() {
                 let _ = std::fs::remove_file(argument);
                 continue;
             }
-            
+
             println!("Debug disassembly successfully dumped to file.");
         }
         else if command.eq_ignore_ascii_case("Palette") {
@@ -391,14 +395,14 @@ pub fn main() {
                 println!("Error: No cartridge loaded.");
                 continue;
             };
-            
+
             const GAP: usize = 8;
             const TABLE_SIZE: usize = 128;
             const WIDTH: usize = TABLE_SIZE + GAP + TABLE_SIZE;
             const HEIGHT: usize = TABLE_SIZE;
             const COLORS: [u32; 4] = [0x000000, 0xFFFFFF, 0x999999, 0x444444];
             let mut buffer = vec![0xFF00FF_u32; WIDTH * HEIGHT];
-            
+
             for (base_address, start_x) in [(0x0000, 0), (0x1000, TABLE_SIZE + GAP)] {
                 for coarse_y in 0b0000 ..= 0b1111 {
                     for coarse_x in 0b0000 ..= 0b1111 {
@@ -421,7 +425,7 @@ pub fn main() {
                     }
                 }
             }
-            
+
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X4;
             let mut window = Window::new("NES Pattern Tables", WIDTH, HEIGHT, window_options).unwrap();
@@ -466,7 +470,7 @@ pub fn main() {
             let mut window = Window::new("NES", ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
             window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             window.set_target_fps(60);
-            
+
             while window.is_open() {
                 machine.controller_1.fill(false);
                 for key in window.get_keys() {
@@ -482,12 +486,12 @@ pub fn main() {
                         _ => {}
                     }
                 }
-                
+
                 while !machine.ppu.is_entering_vblank() {
                     machine.tick();
                 }
                 machine.tick();
-                
+
                 window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             }
         }

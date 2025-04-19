@@ -41,12 +41,12 @@ impl Cartridge {
             return Err("NES file format error.".to_string());
         }
 
-        let header = NESFileHeader {
-            version: match header_data[7] & 0b00001100 {
-                0b00001000 => NESFileVersion::Version2,
+        let mut header = NESFileHeader {
+            version: match header_data[7] & 0b0000_11_00 {
+                0b0000_10_00 => NESFileVersion::Version2,
                 _ => NESFileVersion::Version1
             },
-            mapper_number: (header_data[6] >> 4) as usize,
+            mapper_number: (header_data[6] as usize) >> 4,
             submapper_number: 0,
             nametable_mirroring: if header_data[6] & 0b00000001 == 0 {
                 NametableMirroring::Horizontal
@@ -61,6 +61,15 @@ impl Cartridge {
             prg_ram_size: 0,
             chr_ram_size: 0,
         };
+
+        match header.version {
+            NESFileVersion::Version1 => {}
+            NESFileVersion::Version2 => {
+                header.mapper_number |= (header_data[7] as usize) >> 4 << 4;
+                header.mapper_number |= (header_data[8] as usize & 0b1111) << 8;
+                header.submapper_number = (header_data[8] as usize) >> 4;
+            }
+        }
 
         let trainer = header.has_trainer
             .then(|| {
@@ -91,15 +100,15 @@ impl Cartridge {
             trainer,
         })
     }
-    
+
     pub fn header(&self) -> &NESFileHeader {
         &self.header
     }
-    
+
     pub fn tick(&mut self) {
         self.mapper.tick();
     }
-    
+
     pub fn check_irq(&mut self) -> bool {
         self.mapper.check_irq()
     }
@@ -125,7 +134,7 @@ impl Cartridge {
     pub fn write_ppu_byte(&mut self, address: u16, value: u8) {
         self.mapper.write_ppu_byte(address & 0x3FFF, value)
     }
-    
+
     pub fn debug_print_mapper_state(&self) {
         self.mapper.debug_print_state();
     }
@@ -141,7 +150,7 @@ impl ColorConverter {
             table: Box::new([0_u32; PPU_COLOR_COUNT * 8]),
         }
     }
-    
+
     pub fn parse_pal(&mut self, reader: &mut impl Read) -> Result<(), String> {
         for color in self.table.as_mut_slice() {
             let mut rgb = [0_u8; 3];
@@ -154,13 +163,13 @@ impl ColorConverter {
                 }
                 return Err(err.to_string());
             }
-            
+
             *color = (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
         }
-        
+
         Ok(())
     }
-    
+
     pub fn get_rgb(&self, index: u16) -> u32 {
         self.table[(index & 0b111_111111) as usize]
     }

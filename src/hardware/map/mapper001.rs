@@ -5,7 +5,6 @@ pub struct Mapper001 {
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
     shift_register: u8,
-    use_nametable_mirroring: bool,
     separate_prg_banks: bool,
     fix_last_prg_bank: bool,
     separate_chr_banks: bool,
@@ -36,11 +35,11 @@ impl Mapper001 {
         }
 
         let mut prg_bank_mask = 0b1111;
-        while prg_bank_mask as usize > prg_chunks.len() {
+        while prg_bank_mask as usize >= prg_chunks.len() {
             prg_bank_mask >>= 1;
         }
         let mut chr_bank_mask = 0b11111;
-        while chr_bank_mask as usize > (chr_chunks.len() << 1) {
+        while chr_bank_mask as usize >= (chr_chunks.len() << 1) {
             chr_bank_mask >>= 1;
         }
 
@@ -49,7 +48,6 @@ impl Mapper001 {
             prg_chunks,
             chr_chunks,
             shift_register: Self::SHIFT_REGISTER_RESET,
-            use_nametable_mirroring: false,
             separate_prg_banks: true,
             fix_last_prg_bank: true,
             separate_chr_banks: false,
@@ -117,10 +115,10 @@ impl Mapper for Mapper001 {
     fn read_cpu_byte(&self, address: u16) -> u8 {
         match address {
             0x8000 ..= 0xBFFF => {
-                self.prg_chunks[self.prg_bank_0_chunk][(address & 0x3FFF) as usize]
+                self.prg_chunks[self.prg_bank_0_chunk][address as usize & PRG_CHUNK_OFFSET_MASK]
             }
             0xC000 ..= 0xFFFF => {
-                self.prg_chunks[self.prg_bank_1_chunk][(address & 0x3FFF) as usize]
+                self.prg_chunks[self.prg_bank_1_chunk][address as usize & PRG_CHUNK_OFFSET_MASK]
             }
             _ => crate::hardware::OPEN_BUS
         }
@@ -146,12 +144,13 @@ impl Mapper for Mapper001 {
             match address {
                 0x8000 ..= 0x9FFF => {
                     // Control
-                    self.nametables.mirroring = if self.shift_register & 0b00001 == 0 {
-                        NametableMirroring::Vertical
-                    } else {
-                        NametableMirroring::Horizontal
+                    self.nametables.mirroring = match self.shift_register & 0b00011 {
+                        0b00 => NametableMirroring::OneScreenLower,
+                        0b01 => NametableMirroring::OneScreenUpper,
+                        0b10 => NametableMirroring::Vertical,
+                        0b11 => NametableMirroring::Horizontal,
+                        _ => unreachable!(),
                     };
-                    self.use_nametable_mirroring = self.shift_register & 0b00010 != 0;
                     self.fix_last_prg_bank = self.shift_register & 0b00100 != 0;
                     self.separate_prg_banks = self.shift_register & 0b01000 != 0;
                     self.separate_chr_banks = self.shift_register & 0b10000 != 0;

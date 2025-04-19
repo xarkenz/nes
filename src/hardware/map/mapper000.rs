@@ -44,11 +44,11 @@ impl Mapper for Mapper000 {
     fn read_cpu_byte(&self, address: u16) -> u8 {
         match address {
             0x8000 ..= 0xBFFF => {
-                self.prg_chunk_0[(address & 0x3FFF) as usize]
+                self.prg_chunk_0[address as usize & PRG_CHUNK_OFFSET_MASK]
             }
             0xC000 ..= 0xFFFF => match &self.prg_chunk_1 {
-                Some(prg_rom_bank_1) => prg_rom_bank_1[(address & 0x3FFF) as usize],
-                None => self.prg_chunk_0[(address & 0x3FFF) as usize],
+                Some(prg_rom_bank_1) => prg_rom_bank_1[address as usize & PRG_CHUNK_OFFSET_MASK],
+                None => self.prg_chunk_0[address as usize & PRG_CHUNK_OFFSET_MASK],
             }
             _ => crate::hardware::OPEN_BUS
         }

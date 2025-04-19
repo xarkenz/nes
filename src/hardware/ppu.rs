@@ -26,7 +26,7 @@ const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const SECONDARY_OAM_SIZE: u8 = 32;
 pub const OAM_BYTE_2_MASK: u8 = 0b11100011;
 const NMI_TRIGGER_DELAY: u16 = 2; // Just needs to delay NMI by one instruction I think
-const RENDER_ENABLE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
+const RENDER_ENABLE_DELAY: u16 = 1; // Supposedly 3 or 4, but not very precise
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -60,7 +60,7 @@ pub struct PictureProcessingUnit {
     // PPU_VRAM_DATA
     vram_read_buffer: u8,
     // Internal
-    resetting: bool,
+    pub resetting: bool,
     odd_frame: bool,
     write_latch: bool,
     pub scanline: u16,
@@ -297,7 +297,7 @@ impl PictureProcessingUnit {
         self.vram_address = self.vram_address.wrapping_add(self.vram_address_increment);
         self.update_address_lines(self.vram_address, cartridge);
     }
-    
+
     fn update_address_lines(&mut self, address: u16, cartridge: &mut Cartridge) {
         // Some cartridge mappers rely on detecting VRAM address bit 12 going high to count
         // scanlines, so we'll just cheat a bit and do a garbage read
@@ -331,7 +331,7 @@ impl PictureProcessingUnit {
         self.compute_background_sliver(&mut sliver, vram_address, cartridge);
         sliver
     }
-    
+
     pub fn get_palette_color_rgb(&self, index: u8) -> u32 {
         self.get_color_rgb(self.palette_ram[index as usize])
     }
@@ -359,7 +359,7 @@ impl PictureProcessingUnit {
             // Draw a sliver of the universal background color instead
             self.draw_sliver();
         }
-        
+
         self.sprite_0_hit |= self.sprite_0_hit_timer & 1 != 0;
 
         // On certain cycles, update status flags and/or trigger NMI
@@ -754,7 +754,7 @@ impl PictureProcessingUnit {
                     // Get out-prioritied lol
                     continue;
                 }
-                
+
                 let shift_amount = if flip_x { x_offset } else { 7 - x_offset };
                 let color_bit_0 = (plane_0_row >> shift_amount) & 1;
                 let color_bit_1 = (plane_1_row >> shift_amount) & 1;
@@ -768,10 +768,11 @@ impl PictureProcessingUnit {
             }
         }
     }
-    
+
     pub fn debug_print_state(&self) {
         println!("PPU state:");
-        println!("    Position: (scanline {}, dot {})", self.scanline, self.dot);
+        println!("    Scanline {}, dot {}", self.scanline, self.dot);
+        println!("    Warming up: {}", self.resetting);
         println!("              VPHBSINN");
         println!("    Control: %{:08b}", self.debug_ppu_control);
         println!("           BGRsbMmG");

@@ -1217,8 +1217,10 @@ const TYA: Operation = Operation {
 // Crash CPU (freeze until console is reset)
 // Implied (x12)
 const KIL_X: Operation = Operation {
-    mnemonic: "STP*",
+    mnemonic: "KIL*",
     function: |_, machine| {
+        let opcode = machine.read_byte_silent(machine.cpu.program_counter.wrapping_sub(1));
+        eprintln!("Warning: CPU crashed due to unofficial opcode ${opcode:02X} (KIL*).");
         machine.cpu.is_halted = true;
     }
 };

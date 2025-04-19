@@ -1,9 +1,5 @@
 use crate::loader::*;
 
-mod mapper000;
-mod mapper001;
-mod mapper004;
-
 pub trait Mapper {
     fn name(&self) -> &'static str;
 
@@ -34,7 +30,9 @@ pub trait Mapper {
 }
 
 pub const PRG_CHUNK_SIZE: usize = 0x4000;
+pub const PRG_CHUNK_OFFSET_MASK: usize = PRG_CHUNK_SIZE - 1;
 pub const CHR_CHUNK_SIZE: usize = 0x2000;
+pub const CHR_CHUNK_OFFSET_MASK: usize = CHR_CHUNK_SIZE - 1;
 pub const NAMETABLE_SIZE: usize = 0x0400;
 
 pub type PrgChunk = Box<[u8; PRG_CHUNK_SIZE]>;
@@ -43,17 +41,23 @@ pub type Nametable = Box<[u8; NAMETABLE_SIZE]>;
 
 #[derive(Copy, Clone, Debug)]
 pub enum NametableMirroring {
-    /// PPU A11 -> CIRAM A10
+    /// CIRAM A10 <- PPU A11
     Horizontal,
-    /// PPU A10 -> CIRAM A10
+    /// CIRAM A10 <- PPU A10
     Vertical,
+    /// CIRAM A10 <- 0
+    OneScreenLower,
+    /// CIRAM A10 <- 1
+    OneScreenUpper,
 }
 
 impl std::fmt::Display for NametableMirroring {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            NametableMirroring::Horizontal => write!(f, "Horizontal (PPU A11 -> CIRAM A10)"),
-            NametableMirroring::Vertical => write!(f, "Vertical (PPU A10 -> CIRAM A10)"),
+            NametableMirroring::Horizontal => write!(f, "Horizontal (CIRAM A10 <- PPU A11)"),
+            NametableMirroring::Vertical => write!(f, "Vertical (CIRAM A10 <- PPU A10)"),
+            NametableMirroring::OneScreenLower => write!(f, "One screen, lower bank (CIRAM A10 <- 0)"),
+            NametableMirroring::OneScreenUpper => write!(f, "One screen, upper bank (CIRAM A10 <- 1)"),
         }
     }
 }
@@ -86,8 +90,10 @@ impl BuiltinNametables {
 
     fn nametable_index(&self, address: u16) -> usize {
         match self.mirroring {
-            NametableMirroring::Horizontal => ((address >> 11) & 1) as usize,
-            NametableMirroring::Vertical => ((address >> 10) & 1) as usize,
+            NametableMirroring::Horizontal => (address >> 11 & 1) as usize,
+            NametableMirroring::Vertical => (address >> 10 & 1) as usize,
+            NametableMirroring::OneScreenLower => 0,
+            NametableMirroring::OneScreenUpper => 1,
         }
     }
 }
@@ -100,7 +106,13 @@ pub fn initialize_mapper(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, chr_
     match header.mapper_number {
         000 => boxed(mapper000::Mapper000::new(header, prg_chunks, chr_chunks)),
         001 => boxed(mapper001::Mapper001::new(header, prg_chunks, chr_chunks)),
+        003 => boxed(mapper003::Mapper003::new(header, prg_chunks, chr_chunks)),
         004 => boxed(mapper004::Mapper004::new(header, prg_chunks, chr_chunks)),
         number => Err(format!("Unsupported mapper number: {number:03}."))
     }
 }
+
+mod mapper000;
+mod mapper001;
+mod mapper003;
+mod mapper004;

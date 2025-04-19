@@ -45,11 +45,11 @@ pub struct Mapper004 {
 impl Mapper004 {
     pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
         let mut prg_bank_mask = 0xFF;
-        while prg_bank_mask as usize > (prg_chunks.len() << 1) {
+        while prg_bank_mask as usize >= (prg_chunks.len() << 1) {
             prg_bank_mask >>= 1;
         }
         let mut chr_bank_mask = 0xFF;
-        while chr_bank_mask as usize > (chr_chunks.len() << 3) {
+        while chr_bank_mask as usize >= (chr_chunks.len() << 3) {
             chr_bank_mask >>= 1;
         }
 
