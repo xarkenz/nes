@@ -1,3 +1,4 @@
+use std::sync::mpsc::Sender;
 use crate::hardware::DelayedFlag;
 use channel::*;
 
@@ -9,6 +10,23 @@ pub const APU_STATUS: u16 = 0x4015;
 pub const APU_FRAME_COUNTER: u16 = 0x4017;
 const FOUR_STEP_COUNTER_LIMIT: u16 = 29830;
 const FIVE_STEP_COUNTER_LIMIT: u16 = 37282;
+
+// Rust won't let me generate these tables as compile time constants. Literally 1984
+fn mixer_pulse_table() -> Box<[f32; 31]> {
+    let mut table = Box::new([0.0; 31]);
+    for (index, entry) in table.iter_mut().enumerate() {
+        *entry = (95.52 / (8128.0 / index as f64 + 100.0)) as f32;
+    }
+    table
+}
+
+fn mixer_tnd_table() -> Box<[f32; 203]> {
+    let mut table = Box::new([0.0; 203]);
+    for (index, entry) in table.iter_mut().enumerate() {
+        *entry = (163.67 / (24329.0 / index as f64 + 100.0)) as f32;
+    }
+    table
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum SequencerMode {
@@ -37,13 +55,18 @@ pub struct AudioProcessingUnit {
     frame_irq_asserted: bool,
     frame_counter: u16,
     reset_frame_counter: DelayedFlag<4>,
+    mixer_output: Option<Sender<f32>>,
+    mixer_sample_interval: u16,
+    mixer_sample_timer: u16,
+    mixer_pulse_table: Box<[f32; 31]>,
+    mixer_tnd_table: Box<[f32; 203]>,
 }
 
 impl AudioProcessingUnit {
     pub fn new() -> Self {
         Self {
-            pulse_channel_1: PulseChannel::new(),
-            pulse_channel_2: PulseChannel::new(),
+            pulse_channel_1: PulseChannel::new(false),
+            pulse_channel_2: PulseChannel::new(true),
             triangle_channel: TriangleChannel::new(),
             noise_channel: NoiseChannel::new(),
             delta_modulation_channel: DeltaModulationChannel::new(),
@@ -53,9 +76,36 @@ impl AudioProcessingUnit {
             frame_irq_asserted: false,
             frame_counter: 0,
             reset_frame_counter: DelayedFlag::new(false),
+            mixer_output: None,
+            mixer_sample_interval: 1,
+            mixer_sample_timer: 0,
+            mixer_pulse_table: mixer_pulse_table(),
+            mixer_tnd_table: mixer_tnd_table(),
         }
     }
-    
+
+    pub fn mixer_frequency(&self) -> f64 {
+        use crate::hardware::ppu::{PRE_RENDER_SCANLINE, LAST_DOT, FRAMES_PER_SECOND};
+        use crate::hardware::cpu::TICKS_PER_CPU_CYCLE;
+        // Calculate CPU cycles per second
+        let ppu_cycles_per_frame = (PRE_RENDER_SCANLINE + 1) as f64 * (LAST_DOT + 1) as f64;
+        let cpu_cycles_per_frame = ppu_cycles_per_frame / TICKS_PER_CPU_CYCLE as f64;
+        cpu_cycles_per_frame * FRAMES_PER_SECOND as f64 / self.mixer_sample_interval as f64
+    }
+
+    pub fn set_mixer_sample_interval(&mut self, cycles: u16) {
+        self.mixer_sample_interval = cycles;
+    }
+
+    pub fn connect_mixer_output(&mut self, mixer_output: Sender<f32>) {
+        self.send_mixer_output(&mixer_output);
+        self.mixer_output = Some(mixer_output);
+    }
+
+    pub fn disconnect_mixer_output(&mut self) {
+        self.mixer_output = None;
+    }
+
     pub fn irq_asserted(&self) -> bool {
         self.frame_irq_asserted || self.delta_modulation_channel.irq_asserted()
     }
@@ -89,7 +139,7 @@ impl AudioProcessingUnit {
             _ => {}
         }
     }
-    
+
     pub fn read_status(&mut self) -> u8 {
         // TODO: same time flag behavior?
         let status = (self.pulse_channel_1.is_active() as u8)
@@ -102,7 +152,7 @@ impl AudioProcessingUnit {
         self.frame_irq_asserted = false;
         status
     }
-    
+
     pub fn write_status(&mut self, value: u8) {
         self.pulse_channel_1.set_enabled(value & 0b1 != 0);
         self.pulse_channel_2.set_enabled(value & 0b10 != 0);
@@ -128,7 +178,7 @@ impl AudioProcessingUnit {
             self.reset_frame_counter.tick();
         }
     }
-    
+
     pub fn dmc_dma_request(&self) -> Option<(u16, bool)> {
         self.delta_modulation_channel.dma_request()
     }
@@ -136,15 +186,17 @@ impl AudioProcessingUnit {
     pub fn load_dmc_sample_buffer(&mut self, dma_read: u8) {
         self.delta_modulation_channel.load_sample_buffer(dma_read);
     }
-    
+
     pub fn cpu_cycle_tick(&mut self, second_half_cycle: bool) {
         self.second_half_cycle = second_half_cycle;
         self.reset_frame_counter.tick();
 
-        self.pulse_channel_1.clock_cpu_cycle();
-        self.pulse_channel_2.clock_cpu_cycle();
+        if self.second_half_cycle {
+            self.pulse_channel_1.clock_apu_cycle();
+            self.pulse_channel_2.clock_apu_cycle();
+            self.noise_channel.clock_apu_cycle();
+        }
         self.triangle_channel.clock_cpu_cycle();
-        self.noise_channel.clock_cpu_cycle();
         self.delta_modulation_channel.clock_cpu_cycle();
 
         if self.reset_frame_counter.get_delayed() {
@@ -181,15 +233,23 @@ impl AudioProcessingUnit {
                 }
             }
         }
+
+        if let Some(mixer_output) = &self.mixer_output {
+            self.mixer_sample_timer = self.mixer_sample_timer.saturating_sub(1);
+            if self.mixer_sample_timer == 0 {
+                self.mixer_sample_timer = self.mixer_sample_interval;
+                self.send_mixer_output(mixer_output);
+            }
+        }
     }
-    
+
     fn clock_quarter_frame(&mut self) {
         self.pulse_channel_1.clock_quarter_frame();
         self.pulse_channel_2.clock_quarter_frame();
         self.triangle_channel.clock_quarter_frame();
         self.noise_channel.clock_quarter_frame();
     }
-    
+
     fn clock_half_frame(&mut self) {
         self.clock_quarter_frame();
         self.pulse_channel_1.clock_half_frame();
@@ -197,7 +257,22 @@ impl AudioProcessingUnit {
         self.triangle_channel.clock_half_frame();
         self.noise_channel.clock_half_frame();
     }
-    
+
+    fn send_mixer_output(&self, mixer_output: &Sender<f32>) {
+        let pulse_1 = self.pulse_channel_1.output_level() as usize;
+        let pulse_2 = self.pulse_channel_2.output_level() as usize;
+        let triangle = self.triangle_channel.output_level() as usize;
+        let noise = self.noise_channel.output_level() as usize;
+        let dmc = self.delta_modulation_channel.output_level() as usize;
+
+        // Do some mixing
+        let pulse_output = self.mixer_pulse_table[pulse_1 + pulse_2];
+        let tnd_output = self.mixer_tnd_table[3 * triangle + 2 * noise + dmc];
+
+        // Send the mixer output; not really problematic if it fails, though
+        mixer_output.send(pulse_output + tnd_output).ok();
+    }
+
     pub fn debug_print_state(&self) {
         println!("APU state:");
         println!("    Sequencer mode: {}", self.sequencer_mode);

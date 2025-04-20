@@ -1,54 +1,16 @@
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use cpal::traits::HostTrait;
 use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
+use util::*;
 
 pub mod hardware;
 pub mod loader;
-
-pub trait FromStrRadix {
-    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError>
-    where Self: Sized;
-}
-
-impl FromStrRadix for u8 {
-    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
-        u8::from_str_radix(src, radix)
-    }
-}
-
-impl FromStrRadix for u16 {
-    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
-        u16::from_str_radix(src, radix)
-    }
-}
-
-impl FromStrRadix for u32 {
-    fn from_str_radix(src: &str, radix: u32) -> Result<Self, std::num::ParseIntError> {
-        u32::from_str_radix(src, radix)
-    }
-}
-
-pub fn parse_int<T: FromStrRadix>(string: &str) -> Result<T, std::num::ParseIntError> {
-    let string = string.trim_start_matches('#');
-    if let Some(hex) = string.strip_prefix("0x") {
-        T::from_str_radix(hex, 16)
-    }
-    else if let Some(hex) = string.strip_prefix("$") {
-        T::from_str_radix(hex, 16)
-    }
-    else if let Some(bin) = string.strip_prefix("0b") {
-        T::from_str_radix(bin, 2)
-    }
-    else if let Some(bin) = string.strip_prefix("%") {
-        T::from_str_radix(bin, 2)
-    }
-    else {
-        T::from_str_radix(string, 10)
-    }
-}
+pub mod audio;
+pub mod util;
 
 pub fn main() {
     let keyboard_interrupt_flag = Arc::new(AtomicBool::new(false));
@@ -57,7 +19,7 @@ pub fn main() {
         let keyboard_interrupt_flag = keyboard_interrupt_flag.clone();
         let result = ctrlc::set_handler(move || {
             keyboard_interrupt_flag.store(true, Ordering::Relaxed);
-            println!("Stopping...")
+            println!("Stopping...");
         });
         if let Err(error) = result {
             eprintln!("Warning: Failed to setup Ctrl+C handler: {}", error);
@@ -68,6 +30,7 @@ pub fn main() {
     };
 
     let mut machine = Machine::new();
+    let mut audio_runtime = audio::AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut user_input = String::new();
 
     let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
@@ -465,11 +428,17 @@ pub fn main() {
             }
         }
         else if command.eq_ignore_ascii_case("Play") {
+            let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
+            machine.apu.connect_mixer_output(mixer_sender);
+            machine.apu.set_mixer_sample_interval(4);
+            audio_runtime.connect(dasp::signal::from_iter(mixer_receiver), machine.apu.mixer_frequency());
+
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;
             let mut window = Window::new("NES", ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
+
             window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
-            window.set_target_fps(60);
+            window.set_target_fps(ppu::FRAMES_PER_SECOND);
 
             while window.is_open() {
                 machine.controller_1.fill(false);
@@ -494,6 +463,8 @@ pub fn main() {
 
                 window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             }
+            
+            machine.apu.disconnect_mixer_output();
         }
         else {
             println!("Error: Unknown command: {}", command);

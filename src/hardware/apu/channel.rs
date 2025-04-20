@@ -33,39 +33,70 @@ const LENGTH_TABLE: [u8; 32] = [
     0x1E,
 ];
 
+const PULSE_DUTY_LEVELS: [[u8; 8]; 4] = [
+    [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xF],
+    [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xF, 0xF],
+    [0x0, 0x0, 0x0, 0x0, 0xF, 0xF, 0xF, 0xF],
+    [0xF, 0xF, 0xF, 0xF, 0xF, 0xF, 0x0, 0x0],
+];
+
 pub struct PulseChannel {
     is_enabled: bool,
     length_counter: u8,
-    envelope: u8,
+    envelope_parameter: u8,
     constant_volume: bool,
     halt_length_counter: bool,
+    restart_envelope: bool,
     duty: u8,
-    timer: u16,
+    init_sequence_period: u16,
+    target_sequence_period: u16,
+    sequence_period: u16,
+    sequence_timer: u16,
+    sequence_index: u8,
+    decay_level: u8,
+    decay_timer: u8,
     sweep_enabled: bool,
-    sweep_shift: u8,
+    sweep_carry_in: bool,
+    sweep_shift_amount: u8,
     sweep_negate: bool,
     sweep_period: u8,
+    sweep_timer: u8,
+    sweep_reload: bool,
+    sweep_is_muting: bool,
+    output_level: u8,
 }
 
 impl PulseChannel {
-    pub fn new() -> Self {
+    pub fn new(is_pulse_2: bool) -> Self {
         Self {
             is_enabled: false,
             length_counter: 0,
-            envelope: 0,
+            envelope_parameter: 0,
             constant_volume: false,
             halt_length_counter: false,
+            restart_envelope: false,
             duty: 0,
-            timer: 0,
+            init_sequence_period: 0,
+            target_sequence_period: 0,
+            sequence_period: 0,
+            sequence_timer: 0,
+            sequence_index: 0,
+            decay_level: 0,
+            decay_timer: 0,
             sweep_enabled: false,
-            sweep_shift: 0,
+            sweep_carry_in: is_pulse_2,
+            sweep_shift_amount: 0,
             sweep_negate: false,
             sweep_period: 0,
+            sweep_timer: 0,
+            sweep_reload: false,
+            sweep_is_muting: false,
+            output_level: 0,
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.length_counter > 0
+        self.is_enabled && self.length_counter > 0
     }
 
     pub fn set_enabled(&mut self, enable: bool) {
@@ -75,45 +106,124 @@ impl PulseChannel {
         }
     }
 
+    pub fn output_level(&self) -> u8 {
+        if self.is_active() && !self.sweep_is_muting {
+            self.output_level
+        }
+        else {
+            0
+        }
+    }
+
     pub fn write_register(&mut self, address: u16, value: u8) {
         match address & 0b11 {
-            0b00 => {
-                self.envelope = value & 0b1111;
+            0b00 => { // $4000, $4004
+                self.envelope_parameter = value & 0b1111;
                 self.constant_volume = value & 0b10000 != 0;
                 self.halt_length_counter = value & 0b100000 != 0;
                 self.duty = value >> 6;
             }
-            0b01 => {
-                self.sweep_shift = value & 0b111;
+            0b01 => { // $4001, $4005
+                self.sweep_shift_amount = value & 0b111;
                 self.sweep_negate = value & 0b1000 != 0;
                 self.sweep_period = (value >> 4) & 0b111;
-                self.sweep_enabled = value & 0b10000000 != 0;
+                self.sweep_enabled = self.sweep_shift_amount != 0 && value & 0b10000000 != 0;
+                self.sweep_reload = true;
+                self.update_sweep();
             }
-            0b10 => {
-                self.timer &= 0b111_00000000;
-                self.timer |= value as u16;
+            0b10 => { // $4002, $4006
+                let period_low = value as u16;
+                self.init_sequence_period &= 0b111_00000000;
+                self.init_sequence_period |= period_low;
+                self.sequence_period &= 0b111_00000000;
+                self.sequence_period |= period_low;
+                self.update_sweep();
             }
-            0b11 => {
-                self.timer &= 0b000_11111111;
-                self.timer |= (value as u16 & 0b111) << 8;
+            0b11 => { // $4003, $4007
+                let period_high = (value as u16 & 0b111) << 8;
+                self.init_sequence_period &= 0b000_11111111;
+                self.init_sequence_period |= period_high;
+                self.sequence_period &= 0b000_11111111;
+                self.sequence_period |= period_high;
                 if self.is_enabled {
                     self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
                 }
+                self.sequence_index = 0;
+                self.restart_envelope = true;
+                self.update_sweep();
             }
             _ => unreachable!()
         }
     }
 
-    pub fn clock_cpu_cycle(&mut self) {
-        //
+    pub fn clock_apu_cycle(&mut self) {
+        if self.sequence_timer == 0 {
+            self.sequence_timer = self.sequence_period;
+            self.sequence_index = self.sequence_index.wrapping_add(1) & 0b111;
+            self.update_output_level();
+        }
+        else {
+            self.sequence_timer -= 1;
+        }
     }
 
     pub fn clock_quarter_frame(&mut self) {
-        //
+        if self.restart_envelope {
+            self.restart_envelope = false;
+            self.decay_timer = self.envelope_parameter;
+            self.decay_level = 15;
+        }
+        else if self.decay_timer == 0 {
+            self.decay_timer = self.envelope_parameter;
+            if self.decay_level > 0 {
+                self.decay_level -= 1;
+            }
+            else if self.halt_length_counter {
+                self.decay_level = 15;
+            }
+            self.update_output_level();
+        }
+        else {
+            self.decay_timer -= 1;
+        }
     }
 
     pub fn clock_half_frame(&mut self) {
         self.length_counter = self.length_counter.saturating_sub(!self.halt_length_counter as u8);
+
+        if self.sweep_reload {
+            self.sweep_reload = false;
+            self.sweep_timer = self.sweep_period;
+        }
+        else if self.sweep_timer == 0 {
+            self.sweep_timer = self.sweep_period;
+            if self.sweep_enabled && !self.sweep_is_muting {
+                self.sequence_period = self.target_sequence_period;
+                self.update_sweep();
+            }
+        }
+        else {
+            self.sweep_timer -= 1;
+        }
+    }
+    
+    fn update_sweep(&mut self) {
+        let mut change_amount = (self.init_sequence_period >> self.sweep_shift_amount) as i16;
+        if self.sweep_negate {
+            change_amount = (!change_amount).wrapping_add(self.sweep_carry_in as i16);
+        }
+        self.target_sequence_period = self.sequence_period.saturating_add_signed(change_amount);
+        self.sweep_is_muting = self.sequence_period < 0x008 || self.target_sequence_period > 0x7FF;
+    }
+
+    fn update_output_level(&mut self) {
+        self.output_level = PULSE_DUTY_LEVELS[self.duty as usize][self.sequence_index as usize];
+        if self.constant_volume {
+            self.output_level &= self.envelope_parameter;
+        }
+        else {
+            self.output_level &= self.decay_level;
+        }
     }
 
     pub fn debug_print_state(&self) {
@@ -123,6 +233,11 @@ impl PulseChannel {
     }
 }
 
+const TRIANGLE_LEVELS: [u8; 32] = [
+    0xF, 0xE, 0xD, 0xC, 0xB, 0xA, 0x9, 0x8, 0x7, 0x6, 0x5, 0x4, 0x3, 0x2, 0x1, 0x0,
+    0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF,
+];
+
 pub struct TriangleChannel {
     is_enabled: bool,
     length_counter: u8,
@@ -130,7 +245,10 @@ pub struct TriangleChannel {
     halt_counters: bool,
     linear_counter_reload_value: u8,
     reload_linear_counter: bool,
-    timer: u16,
+    sequence_period: u16,
+    sequence_timer: u16,
+    sequence_index: u8,
+    output_level: u8,
 }
 
 impl TriangleChannel {
@@ -142,7 +260,10 @@ impl TriangleChannel {
             halt_counters: false,
             linear_counter_reload_value: 0,
             reload_linear_counter: false,
-            timer: 0,
+            sequence_period: 0,
+            sequence_timer: 0,
+            sequence_index: 0,
+            output_level: TRIANGLE_LEVELS[0],
         }
     }
 
@@ -157,22 +278,31 @@ impl TriangleChannel {
         }
     }
 
+    pub fn output_level(&self) -> u8 {
+        if self.is_enabled {
+            self.output_level
+        }
+        else {
+            0
+        }
+    }
+
     pub fn write_register(&mut self, address: u16, value: u8) {
         match address & 0b11 {
-            0b00 => {
+            0b00 => { // $4008
                 self.linear_counter_reload_value = value & 0b1111111;
                 self.halt_counters = value & 0b10000000 != 0;
             }
-            0b01 => {
+            0b01 => { // $4009
                 // Unused
             }
-            0b10 => {
-                self.timer &= 0b111_00000000;
-                self.timer |= value as u16;
+            0b10 => { // $400A
+                self.sequence_period &= 0b111_00000000;
+                self.sequence_period |= value as u16;
             }
-            0b11 => {
-                self.timer &= 0b000_11111111;
-                self.timer |= (value as u16 & 0b111) << 8;
+            0b11 => { // $400B
+                self.sequence_period &= 0b000_11111111;
+                self.sequence_period |= (value as u16 & 0b111) << 8;
                 if self.is_enabled {
                     self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
                 }
@@ -183,17 +313,26 @@ impl TriangleChannel {
     }
 
     pub fn clock_cpu_cycle(&mut self) {
-        //
+        if self.sequence_timer == 0 {
+            self.sequence_timer = self.sequence_period;
+            if self.length_counter > 0 && self.linear_counter > 0 {
+                self.sequence_index = self.sequence_index.wrapping_add(1) & 0b11111;
+                self.output_level = TRIANGLE_LEVELS[self.sequence_index as usize];
+            }
+        }
+        else {
+            self.sequence_timer -= 1;
+        }
     }
 
     pub fn clock_quarter_frame(&mut self) {
         if self.reload_linear_counter {
             self.linear_counter = self.linear_counter_reload_value;
+            self.reload_linear_counter = self.halt_counters;
         }
         else {
             self.linear_counter = self.linear_counter.saturating_sub(!self.halt_counters as u8);
         }
-        self.reload_linear_counter &= self.halt_counters;
     }
 
     pub fn clock_half_frame(&mut self) {
@@ -208,14 +347,25 @@ impl TriangleChannel {
     }
 }
 
+const NOISE_PERIODS: [u16; 16] = [
+    0x002, 0x004, 0x008, 0x010, 0x020, 0x030, 0x040, 0x050,
+    0x065, 0x07F, 0x0BE, 0x0FE, 0x17D, 0x1FC, 0x3F9, 0x7F2,
+];
+
 pub struct NoiseChannel {
     is_enabled: bool,
     length_counter: u8,
-    envelope: u8,
+    envelope_parameter: u8,
     constant_volume: bool,
     halt_length_counter: bool,
-    noise_period: u8,
-    loop_noise: bool,
+    restart_envelope: bool,
+    noise_loop_mode: bool,
+    noise_period: u16,
+    noise_timer: u16,
+    decay_timer: u8,
+    decay_level: u8,
+    shift_register: u16,
+    output_level: u8,
 }
 
 impl NoiseChannel {
@@ -223,16 +373,22 @@ impl NoiseChannel {
         Self {
             is_enabled: false,
             length_counter: 0,
-            envelope: 0,
+            envelope_parameter: 0,
             constant_volume: false,
             halt_length_counter: false,
-            noise_period: 0,
-            loop_noise: false,
+            restart_envelope: false,
+            noise_loop_mode: false,
+            noise_period: NOISE_PERIODS[0],
+            noise_timer: 0,
+            decay_timer: 0,
+            decay_level: 0,
+            shift_register: 1,
+            output_level: 0,
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.length_counter > 0
+        self.is_enabled && self.length_counter > 0
     }
 
     pub fn set_enabled(&mut self, enable: bool) {
@@ -242,39 +398,86 @@ impl NoiseChannel {
         }
     }
 
+    pub fn output_level(&self) -> u8 {
+        if self.is_active() {
+            self.output_level
+        }
+        else {
+            0
+        }
+    }
+
     pub fn write_register(&mut self, address: u16, value: u8) {
         match address & 0b11 {
-            0b00 => {
-                self.envelope = value & 0b1111;
+            0b00 => { // $400C
+                self.envelope_parameter = value & 0b1111;
                 self.constant_volume = value & 0b10000 != 0;
                 self.halt_length_counter = value & 0b100000 != 0;
             }
-            0b01 => {
+            0b01 => { // $400D
                 // Unused
             }
-            0b10 => {
-                self.noise_period = value & 0b1111;
-                self.loop_noise = value & 0b10000000 != 0;
+            0b10 => { // $400E
+                self.noise_period = NOISE_PERIODS[(value & 0b1111) as usize];
+                self.noise_loop_mode = value & 0b10000000 != 0;
             }
-            0b11 => {
+            0b11 => { // $400F
                 if self.is_enabled {
                     self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
                 }
+                self.restart_envelope = true;
             }
             _ => unreachable!()
         }
     }
 
-    pub fn clock_cpu_cycle(&mut self) {
-        //
+    pub fn clock_apu_cycle(&mut self) {
+        if self.noise_timer == 0 {
+            self.noise_timer = self.noise_period;
+            let feedback_bit = if self.noise_loop_mode { 6 } else { 1 };
+            let feedback = (self.shift_register & 1) ^ (self.shift_register >> feedback_bit & 1);
+            self.shift_register >>= 1;
+            self.shift_register |= feedback << 14;
+            self.update_output_level();
+        }
+        else {
+            self.noise_timer -= 1;
+        }
     }
 
     pub fn clock_quarter_frame(&mut self) {
-        //
+        if self.restart_envelope {
+            self.restart_envelope = false;
+            self.decay_timer = self.envelope_parameter;
+            self.decay_level = 15;
+        }
+        else if self.decay_timer == 0 {
+            self.decay_timer = self.envelope_parameter;
+            if self.decay_level > 0 {
+                self.decay_level -= 1;
+            }
+            else if self.halt_length_counter {
+                self.decay_level = 15;
+            }
+        }
+        else {
+            self.decay_timer -= 1;
+        }
     }
 
     pub fn clock_half_frame(&mut self) {
         self.length_counter = self.length_counter.saturating_sub(!self.halt_length_counter as u8);
+    }
+
+    fn update_output_level(&mut self) {
+        if self.shift_register & 1 != 0 {
+            if self.constant_volume {
+                self.output_level = self.envelope_parameter;
+            }
+            else {
+                self.output_level = self.decay_level;
+            }
+        }
     }
 
     pub fn debug_print_state(&self) {
@@ -360,6 +563,15 @@ impl DeltaModulationChannel {
             self.sample_pointer = self.sample_start_address;
             self.sample_bytes_left = self.sample_length;
             self.dma_is_reload = false;
+        }
+    }
+
+    pub fn output_level(&self) -> u8 {
+        if self.is_enabled {
+            self.pcm_counter
+        }
+        else {
+            0
         }
     }
 
