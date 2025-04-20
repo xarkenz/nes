@@ -6,6 +6,7 @@ use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
 use loader::*;
 use util::*;
+use crate::audio::ReceiverSignal;
 
 pub mod hardware;
 pub mod loader;
@@ -430,8 +431,8 @@ pub fn main() {
         else if command.eq_ignore_ascii_case("Play") {
             let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
             machine.apu.connect_mixer_output(mixer_sender);
-            machine.apu.set_mixer_sample_interval(4);
-            audio_runtime.connect(dasp::signal::from_iter(mixer_receiver), machine.apu.mixer_frequency());
+            machine.apu.set_mixer_sample_interval(1);
+            audio_runtime.connect(ReceiverSignal::new(mixer_receiver), machine.apu.mixer_frequency());
 
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;
@@ -463,8 +464,9 @@ pub fn main() {
 
                 window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             }
-            
+
             machine.apu.disconnect_mixer_output();
+            audio_runtime.disconnect();
         }
         else {
             println!("Error: Unknown command: {}", command);

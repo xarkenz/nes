@@ -206,7 +206,7 @@ impl PulseChannel {
             self.sweep_timer -= 1;
         }
     }
-    
+
     fn update_sweep(&mut self) {
         let mut change_amount = (self.init_sequence_period >> self.sweep_shift_amount) as i16;
         if self.sweep_negate {
@@ -470,13 +470,16 @@ impl NoiseChannel {
     }
 
     fn update_output_level(&mut self) {
-        if self.shift_register & 1 != 0 {
+        if self.shift_register & 1 == 0 {
             if self.constant_volume {
                 self.output_level = self.envelope_parameter;
             }
             else {
                 self.output_level = self.decay_level;
             }
+        }
+        else {
+            self.output_level = 0;
         }
     }
 

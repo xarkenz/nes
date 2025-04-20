@@ -1,8 +1,34 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::Receiver;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use dasp::{Sample, Signal};
 use crate::util::AtomicF32;
+
+pub struct ReceiverSignal<T: dasp::Frame> {
+    receiver: Receiver<T>,
+    previous_value: T,
+}
+
+impl<T: dasp::Frame> ReceiverSignal<T> {
+    pub fn new(receiver: Receiver<T>) -> Self {
+        Self {
+            receiver,
+            previous_value: T::EQUILIBRIUM,
+        }
+    }
+}
+
+impl<T: dasp::Frame> Signal for ReceiverSignal<T> {
+    type Frame = T;
+
+    fn next(&mut self) -> Self::Frame {
+        if let Ok(frame) = self.receiver.try_recv() {
+            self.previous_value = frame;
+        }
+        self.previous_value
+    }
+}
 
 pub struct AudioRuntime {
     device: cpal::Device,
@@ -38,7 +64,7 @@ impl AudioRuntime {
 
         let converter = dasp::signal::interpolate::Converter::from_hz_to_hz(
             signal,
-            dasp::interpolate::linear::Linear::new(0.0, 0.0),
+            dasp::interpolate::floor::Floor::new(0.0),
             sample_rate,
             config.sample_rate.0 as f64,
         );
