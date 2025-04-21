@@ -33,10 +33,13 @@ pub fn main() {
     let mut machine = Machine::new();
     let mut audio_runtime = audio::AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut user_input = String::new();
+    let mut target_fps = NTSC_FRAMES_PER_SECOND;
 
-    let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
-        .expect("failed to open pal file");
-    machine.ppu.color_converter.parse_pal(&mut pal_file).unwrap();
+    {
+        let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
+            .expect("failed to open pal file");
+        machine.ppu.color_converter.parse_pal(&mut pal_file).unwrap();
+    }
 
     loop {
         print!("> ");
@@ -428,18 +431,34 @@ pub fn main() {
                 window.update_with_buffer(&buffer, ppu::SCREEN_WIDTH * 2, ppu::SCREEN_HEIGHT * 2).unwrap();
             }
         }
+        else if command.eq_ignore_ascii_case("FPS") {
+            if argument.is_empty() {
+                println!("Target FPS is {target_fps}.");
+                continue;
+            }
+            match parse_int::<u16>(argument) {
+                Ok(fps) => {
+                    target_fps = fps as usize;
+                }
+                Err(error) => {
+                    eprintln!("Error: Invalid FPS value: {error}");
+                }
+            }
+        }
         else if command.eq_ignore_ascii_case("Play") {
             let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
             machine.apu.connect_mixer_output(mixer_sender);
-            machine.apu.set_mixer_sample_interval(1);
-            audio_runtime.connect(ReceiverSignal::new(mixer_receiver), machine.apu.mixer_frequency());
+            audio_runtime.connect(
+                ReceiverSignal::new(mixer_receiver),
+                machine.apu.mixer_samples_per_frame() * target_fps as f64,
+            );
 
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;
             let mut window = Window::new("NES", ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
 
             window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
-            window.set_target_fps(ppu::FRAMES_PER_SECOND);
+            window.set_target_fps(target_fps);
 
             while window.is_open() {
                 machine.controller_1.fill(false);

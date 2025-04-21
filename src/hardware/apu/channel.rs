@@ -48,9 +48,8 @@ pub struct PulseChannel {
     halt_length_counter: bool,
     restart_envelope: bool,
     duty: u8,
-    init_sequence_period: u16,
-    target_sequence_period: u16,
     sequence_period: u16,
+    target_sequence_period: u16,
     sequence_timer: u16,
     sequence_index: u8,
     decay_level: u8,
@@ -76,9 +75,8 @@ impl PulseChannel {
             halt_length_counter: false,
             restart_envelope: false,
             duty: 0,
-            init_sequence_period: 0,
-            target_sequence_period: 0,
             sequence_period: 0,
+            target_sequence_period: 0,
             sequence_timer: 0,
             sequence_index: 0,
             decay_level: 0,
@@ -129,20 +127,16 @@ impl PulseChannel {
                 self.sweep_period = (value >> 4) & 0b111;
                 self.sweep_enabled = self.sweep_shift_amount != 0 && value & 0b10000000 != 0;
                 self.sweep_reload = true;
-                self.update_sweep();
+                self.update_sweep_target();
             }
             0b10 => { // $4002, $4006
                 let period_low = value as u16;
-                self.init_sequence_period &= 0b111_00000000;
-                self.init_sequence_period |= period_low;
                 self.sequence_period &= 0b111_00000000;
                 self.sequence_period |= period_low;
-                self.update_sweep();
+                self.update_sweep_target();
             }
             0b11 => { // $4003, $4007
                 let period_high = (value as u16 & 0b111) << 8;
-                self.init_sequence_period &= 0b000_11111111;
-                self.init_sequence_period |= period_high;
                 self.sequence_period &= 0b000_11111111;
                 self.sequence_period |= period_high;
                 if self.is_enabled {
@@ -150,7 +144,7 @@ impl PulseChannel {
                 }
                 self.sequence_index = 0;
                 self.restart_envelope = true;
-                self.update_sweep();
+                self.update_sweep_target();
             }
             _ => unreachable!()
         }
@@ -199,7 +193,7 @@ impl PulseChannel {
             self.sweep_timer = self.sweep_period;
             if self.sweep_enabled && !self.sweep_is_muting {
                 self.sequence_period = self.target_sequence_period;
-                self.update_sweep();
+                self.update_sweep_target();
             }
         }
         else {
@@ -207,8 +201,8 @@ impl PulseChannel {
         }
     }
 
-    fn update_sweep(&mut self) {
-        let mut change_amount = (self.init_sequence_period >> self.sweep_shift_amount) as i16;
+    fn update_sweep_target(&mut self) {
+        let mut change_amount = (self.sequence_period >> self.sweep_shift_amount) as i16;
         if self.sweep_negate {
             change_amount = (!change_amount).wrapping_add(self.sweep_carry_in as i16);
         }

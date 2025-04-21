@@ -84,13 +84,13 @@ impl AudioProcessingUnit {
         }
     }
 
-    pub fn mixer_frequency(&self) -> f64 {
-        use crate::hardware::ppu::{PRE_RENDER_SCANLINE, LAST_DOT, FRAMES_PER_SECOND};
+    pub fn mixer_samples_per_frame(&self) -> f64 {
+        use crate::hardware::ppu::{PRE_RENDER_SCANLINE, LAST_DOT};
         use crate::hardware::cpu::TICKS_PER_CPU_CYCLE;
         // Calculate CPU cycles per second
         let ppu_cycles_per_frame = (PRE_RENDER_SCANLINE + 1) as f64 * (LAST_DOT + 1) as f64;
         let cpu_cycles_per_frame = ppu_cycles_per_frame / TICKS_PER_CPU_CYCLE as f64;
-        cpu_cycles_per_frame * FRAMES_PER_SECOND as f64 / self.mixer_sample_interval as f64
+        cpu_cycles_per_frame / self.mixer_sample_interval as f64
     }
 
     pub fn set_mixer_sample_interval(&mut self, cycles: u16) {
@@ -171,8 +171,7 @@ impl AudioProcessingUnit {
         };
         self.frame_irq_asserted &= !self.frame_irq_inhibited;
 
-        // Reset the frame counter in 3 CPU cycles if in APU cycle, or 4 CPU cycles otherwise
-        // TODO: does "in" APU cycle mean first or second half?
+        // Reset the frame counter in 3 CPU cycles if 2nd half APU cycle, or 4 CPU cycles otherwise
         self.reset_frame_counter.pulse(true);
         if self.second_half_cycle {
             self.reset_frame_counter.tick();

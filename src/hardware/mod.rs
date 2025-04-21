@@ -54,7 +54,8 @@ impl<const N: u16> DelayedFlag<N> {
     }
 }
 
-pub const OPEN_BUS: u8 = 0x00; // Can be any byte value
+pub const NTSC_FRAMES_PER_SECOND: usize = 60;
+pub const OPEN_BUS: u8 = 0x00;
 pub const STACK_PAGE: u16 = 0x0100;
 pub const NMI_VECTOR: u16 = 0xFFFA;
 pub const RESET_VECTOR: u16 = 0xFFFC;
