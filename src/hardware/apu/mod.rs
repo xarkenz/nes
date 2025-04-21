@@ -141,7 +141,6 @@ impl AudioProcessingUnit {
     }
 
     pub fn read_status(&mut self) -> u8 {
-        // TODO: same time flag behavior?
         let status = (self.pulse_channel_1.is_active() as u8)
             | (self.pulse_channel_2.is_active() as u8) << 1
             | (self.triangle_channel.is_active() as u8) << 2

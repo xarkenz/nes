@@ -34,6 +34,7 @@ pub fn main() {
     let mut audio_runtime = audio::AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut user_input = String::new();
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
+    let mut log_sound = false;
 
     {
         let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
@@ -445,13 +446,39 @@ pub fn main() {
                 }
             }
         }
+        else if command.eq_ignore_ascii_case("LogSound") {
+            log_sound = true;
+            println!("Sound logging is now enabled.");
+        }
+        else if command.eq_ignore_ascii_case("NoLogSound") {
+            log_sound = false;
+            println!("Sound logging is now disabled.");
+        }
         else if command.eq_ignore_ascii_case("Play") {
+            use dasp::Signal;
             let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
             machine.apu.connect_mixer_output(mixer_sender);
-            audio_runtime.connect(
-                ReceiverSignal::new(mixer_receiver),
-                machine.apu.mixer_samples_per_frame() * target_fps as f64,
-            );
+            if log_sound {
+                let mut log_file = std::fs::File::create("target/sndlog.txt").unwrap();
+                let mut last_frame = 0.0;
+                audio_runtime.connect(
+                    ReceiverSignal::new(mixer_receiver).map(move |frame| {
+                        let frame = frame * 2.0 - 1.0;
+                        if frame != last_frame {
+                            writeln!(log_file, "{frame}").ok();
+                            last_frame = frame;
+                        }
+                        frame
+                    }),
+                    machine.apu.mixer_samples_per_frame() * target_fps as f64,
+                );
+            }
+            else {
+                audio_runtime.connect(
+                    ReceiverSignal::new(mixer_receiver).map(|frame| frame * 2.0 - 1.0),
+                    machine.apu.mixer_samples_per_frame() * target_fps as f64,
+                );
+            }
 
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;

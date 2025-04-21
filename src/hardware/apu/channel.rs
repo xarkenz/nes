@@ -564,12 +564,7 @@ impl DeltaModulationChannel {
     }
 
     pub fn output_level(&self) -> u8 {
-        if self.is_enabled {
-            self.pcm_counter
-        }
-        else {
-            0
-        }
+        self.pcm_counter
     }
 
     pub fn irq_asserted(&self) -> bool {
