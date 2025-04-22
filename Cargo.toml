@@ -3,6 +3,14 @@ name = "nes"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "nes_backend"
+path = "src/backend/lib.rs"
+
+[[bin]]
+name = "nes"
+path = "src/frontend/main.rs"
+
 [dependencies]
 cpal = "0.15"
 ctrlc = "3.4"

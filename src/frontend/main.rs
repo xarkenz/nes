@@ -3,13 +3,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::HostTrait;
 use minifb::{Key, Scale, Window, WindowOptions};
-use hardware::*;
-use util::*;
-use crate::audio::ReceiverSignal;
+use nes_backend::hardware::*;
+use nes_backend::util::*;
+use audio::*;
 
-pub mod hardware;
 pub mod audio;
-pub mod util;
 
 pub fn main() {
     let keyboard_interrupt_flag = Arc::new(AtomicBool::new(false));
@@ -29,13 +27,13 @@ pub fn main() {
     };
 
     let mut machine = Machine::new();
-    let mut audio_runtime = audio::AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
+    let mut audio_runtime = AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
     let mut log_sound = false;
     let mut user_input = String::new();
 
     {
-        let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
+        let mut pal_file = std::fs::File::open("src/frontend/2C02G_wiki.pal")
             .expect("failed to open pal file");
         machine.ppu.color_converter.parse_pal(&mut pal_file).unwrap();
     }
@@ -505,16 +503,15 @@ pub fn main() {
             while window.is_open() {
                 machine.joypads.player_1.fill(false);
                 for key in window.get_keys() {
-                    use hardware::joypad::*;
                     match key {
-                        Key::K => machine.joypads.player_1[BUTTON_A] = true,
-                        Key::J => machine.joypads.player_1[BUTTON_B] = true,
-                        Key::Tab => machine.joypads.player_1[BUTTON_SELECT] = true,
-                        Key::Space => machine.joypads.player_1[BUTTON_START] = true,
-                        Key::W => machine.joypads.player_1[BUTTON_UP] = true,
-                        Key::S => machine.joypads.player_1[BUTTON_DOWN] = true,
-                        Key::A => machine.joypads.player_1[BUTTON_LEFT] = true,
-                        Key::D => machine.joypads.player_1[BUTTON_RIGHT] = true,
+                        Key::K => machine.joypads.player_1[joypad::BUTTON_A] = true,
+                        Key::J => machine.joypads.player_1[joypad::BUTTON_B] = true,
+                        Key::Tab => machine.joypads.player_1[joypad::BUTTON_SELECT] = true,
+                        Key::Space => machine.joypads.player_1[joypad::BUTTON_START] = true,
+                        Key::W => machine.joypads.player_1[joypad::BUTTON_UP] = true,
+                        Key::S => machine.joypads.player_1[joypad::BUTTON_DOWN] = true,
+                        Key::A => machine.joypads.player_1[joypad::BUTTON_LEFT] = true,
+                        Key::D => machine.joypads.player_1[joypad::BUTTON_RIGHT] = true,
                         _ => {}
                     }
                 }

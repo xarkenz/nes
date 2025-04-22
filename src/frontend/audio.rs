@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use dasp::{Sample, Signal};
-use crate::util::AtomicF32;
+use nes_backend::util::AtomicF32;
 
 pub struct ReceiverSignal<T: dasp::Frame> {
     receiver: Receiver<T>,
