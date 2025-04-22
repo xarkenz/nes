@@ -64,9 +64,8 @@ impl Mapper004 {
             chr_bank_mode_1: false,
             prg_bank_mask,
             chr_bank_mask,
-            // too lazy to initialize explicitly. plus they're being updated immediately after
-            prg_bank_indices: Default::default(),
-            chr_bank_indices: Default::default(),
+            prg_bank_indices: [(0, 0); 4],
+            chr_bank_indices: [(0, 0); 8],
             irq_trigger: match header.submapper_number {
                 2 => IRQTrigger::Edge,
                 _ => IRQTrigger::Level
@@ -82,6 +81,7 @@ impl Mapper004 {
 
         mapper.update_prg_banks();
         mapper.update_chr_banks();
+
         Ok(mapper)
     }
 

@@ -1,18 +1,19 @@
-use crate::hardware::DelayedFlag;
-use crate::loader::{Cartridge, ColorConverter};
+use crate::hardware::timing::DelayedFlag;
+use crate::hardware::cartridge::Cartridge;
+use color::*;
 
-pub const PPU_CONTROL: u16 = 0;
-pub const PPU_MASK: u16 = 1;
-pub const PPU_STATUS: u16 = 2;
-pub const PPU_OAM_ADDRESS: u16 = 3;
-pub const PPU_OAM_DATA: u16 = 4;
-pub const PPU_SCROLL: u16 = 5;
-pub const PPU_VRAM_ADDRESS: u16 = 6;
-pub const PPU_VRAM_DATA: u16 = 7;
+pub mod color;
+
+pub const PPU_CONTROL: u16 = 0x2000;
+pub const PPU_MASK: u16 = 0x2001;
+pub const PPU_STATUS: u16 = 0x2002;
+pub const PPU_OAM_ADDRESS: u16 = 0x2003;
+pub const PPU_OAM_DATA: u16 = 0x2004;
+pub const PPU_SCROLL: u16 = 0x2005;
+pub const PPU_VRAM_ADDRESS: u16 = 0x2006;
+pub const PPU_VRAM_DATA: u16 = 0x2007;
 pub const TICKS_PER_PPU_CYCLE: u16 = 1;
 pub const PPU_COLOR_COUNT: usize = 64;
-pub const HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
-pub const VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
 pub const LAST_VISIBLE_SCANLINE: u16 = 239;
@@ -21,12 +22,14 @@ pub const PRE_RENDER_SCANLINE: u16 = 261;
 pub const LAST_DOT: u16 = 340;
 const NORMAL_COLOR_MASK: u16 = 0b111111;
 const GREYSCALE_COLOR_MASK: u16 = 0b110000;
+const VRAM_HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
+const VRAM_VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
 const SECONDARY_OAM_SIZE: u8 = 32;
-pub const OAM_BYTE_2_MASK: u8 = 0b11100011;
+const OAM_BYTE_2_MASK: u8 = 0b11100011;
 const NMI_TRIGGER_DELAY: u16 = 2; // Just needs to delay NMI by one instruction I think
-const RENDER_ENABLE_DELAY: u16 = 1; // Supposedly 3 or 4, but not very precise
+const RENDER_ENABLE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
 
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
@@ -523,16 +526,16 @@ impl PictureProcessingUnit {
 
     fn reset_coarse_x(&mut self) {
         // Retain the bits related to vertical position
-        self.vram_address &= VERTICAL_BITS;
+        self.vram_address &= VRAM_VERTICAL_BITS;
         // Copy coarse X and horizontal nametable bit from the origin VRAM address
-        self.vram_address |= self.origin_vram_address & HORIZONTAL_BITS;
+        self.vram_address |= self.origin_vram_address & VRAM_HORIZONTAL_BITS;
     }
 
     fn reset_fine_y(&mut self) {
         // Retain the bits related to horizontal position
-        self.vram_address &= HORIZONTAL_BITS;
+        self.vram_address &= VRAM_HORIZONTAL_BITS;
         // Copy fine Y, coarse Y, and vertical nametable bit from the origin VRAM address
-        self.vram_address |= self.origin_vram_address & VERTICAL_BITS;
+        self.vram_address |= self.origin_vram_address & VRAM_VERTICAL_BITS;
     }
 
     fn increment_coarse_x(&mut self) {

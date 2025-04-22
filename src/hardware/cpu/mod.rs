@@ -1,4 +1,6 @@
-use crate::hardware::instructions::Instruction;
+use instruction::Instruction;
+
+pub mod instruction;
 
 pub const OAM_DMA_REGISTER: u16 = 0x4014;
 pub const TICKS_PER_CPU_CYCLE: u16 = 3;
@@ -121,7 +123,9 @@ impl CentralProcessingUnit {
 
     pub fn debug_print_state(&self) {
         println!("CPU state:");
-        println!("    Halted: {}", self.is_halted);
+        if self.is_halted {
+            println!("    HALTED!");
+        }
         println!("    PC: ${:04X}", self.program_counter);
         println!("    SP: $01{:02X}", self.stack_pointer);
         println!("    A: ${:02X}", self.accumulator);

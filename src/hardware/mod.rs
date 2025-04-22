@@ -1,58 +1,18 @@
 use std::collections::BTreeMap;
 use std::io::Write;
-use crate::loader::Cartridge;
-use instructions::*;
+use cpu::instruction::*;
 use cpu::*;
 use ppu::*;
 use apu::*;
+use cartridge::*;
+use joypad::*;
 
-pub mod instructions;
 pub mod cpu;
 pub mod ppu;
 pub mod apu;
-pub mod map;
-
-#[derive(Copy, Clone, Debug)]
-pub struct DelayedFlag<const N: u16> {
-    shifter: u16,
-    current_flag: bool,
-}
-
-impl<const N: u16> DelayedFlag<N> {
-    pub fn new(initial_flag: bool) -> Self {
-        Self {
-            shifter: ((0b10 << N) - 1) * initial_flag as u16,
-            current_flag: initial_flag,
-        }
-    }
-
-    pub fn reset(&mut self, flag: bool) {
-        self.shifter = ((0b10 << N) - 1) * flag as u16;
-        self.current_flag = flag;
-    }
-
-    pub fn get_current(&self) -> bool {
-        self.current_flag
-    }
-
-    pub fn set_current(&mut self, flag: bool) {
-        self.current_flag = flag;
-        self.shifter |= (flag as u16) << N;
-    }
-    
-    pub fn pulse(&mut self, flag: bool) {
-        self.shifter |= (flag as u16) << N;
-    }
-
-    pub fn get_delayed(&self) -> bool {
-        self.shifter & 1 != 0
-    }
-
-    pub fn tick(&mut self) {
-        self.shifter >>= 1;
-        self.shifter |= (self.current_flag as u16) << N;
-    }
-}
+pub mod cartridge;
+pub mod joypad;
+pub mod timing;
 
 pub const NTSC_FRAMES_PER_SECOND: usize = 60;
 pub const OPEN_BUS: u8 = 0x00;
@@ -60,30 +20,14 @@ pub const STACK_PAGE: u16 = 0x0100;
 pub const NMI_VECTOR: u16 = 0xFFFA;
 pub const RESET_VECTOR: u16 = 0xFFFC;
 pub const IRQ_VECTOR: u16 = 0xFFFE;
-pub const CONTROLLER_1_REGISTER: u16 = 0x4016;
-pub const CONTROLLER_2_REGISTER: u16 = 0x4017;
-pub const BUTTON_A: usize = 0;
-pub const BUTTON_B: usize = 1;
-pub const BUTTON_SELECT: usize = 2;
-pub const BUTTON_START: usize = 3;
-pub const BUTTON_UP: usize = 4;
-pub const BUTTON_DOWN: usize = 5;
-pub const BUTTON_LEFT: usize = 6;
-pub const BUTTON_RIGHT: usize = 7;
-pub const BUTTON_COUNT: usize = 8;
-const CONTROLLER_EXCESS_READ: u8 = 0x01;
 
 pub struct Machine {
-    pub cartridge: Option<Cartridge>,
     pub cpu: CentralProcessingUnit,
     pub ppu: PictureProcessingUnit,
     pub apu: AudioProcessingUnit,
-    internal_ram: Box<[u8; 0x0800]>,
-    pub controller_1: [bool; BUTTON_COUNT],
-    pub controller_2: [bool; BUTTON_COUNT],
-    controller_strobe: bool,
-    controller_1_button: usize,
-    controller_2_button: usize,
+    pub cartridge: Option<Cartridge>,
+    pub joypads: Joypads,
+    pub internal_ram: Box<[u8; 0x0800]>,
     pub debug_printing: bool,
     debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
 }
@@ -91,16 +35,12 @@ pub struct Machine {
 impl Machine {
     pub fn new() -> Self {
         Self {
-            cartridge: None,
             cpu: CentralProcessingUnit::new(),
             ppu: PictureProcessingUnit::new(),
             apu: AudioProcessingUnit::new(),
+            cartridge: None,
+            joypads: Joypads::new(),
             internal_ram: Box::new([0; 0x0800]),
-            controller_1: [false; BUTTON_COUNT],
-            controller_2: [false; BUTTON_COUNT],
-            controller_strobe: false,
-            controller_1_button: BUTTON_COUNT,
-            controller_2_button: BUTTON_COUNT,
             debug_printing: false,
             debug_disassembly: None,
         }
@@ -136,7 +76,7 @@ impl Machine {
         self.cpu.reset();
         self.ppu.reset();
         self.apu.reset();
-        self.cpu.program_counter = self.read_pair(RESET_VECTOR);
+        self.cpu.program_counter = self.read_word(RESET_VECTOR);
     }
 
     pub fn read_byte(&mut self, address: u16) -> u8 {
@@ -144,47 +84,34 @@ impl Machine {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize]
             }
-            0x2000 ..= 0x3FFF => match address & 0x0007 {
-                PPU_STATUS => self.ppu.read_status(),
-                PPU_OAM_DATA => self.ppu.read_oam_data(),
-                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge {
-                    self.ppu.read_vram_data(cartridge)
-                } else {
-                    OPEN_BUS
+            0x2000 ..= 0x3FFF => match address & 0x2007 {
+                PPU_STATUS => {
+                    self.ppu.read_status()
+                }
+                PPU_OAM_DATA => {
+                    self.ppu.read_oam_data()
+                }
+                PPU_VRAM_DATA => {
+                    self.cartridge.as_mut().map_or(OPEN_BUS, |cartridge| {
+                        self.ppu.read_vram_data(cartridge)
+                    })
                 }
                 _ => OPEN_BUS
             }
             APU_STATUS => {
                 self.apu.read_status()
             }
-            CONTROLLER_1_REGISTER => {
-                // TODO: unconnected data lines
-                if self.controller_1_button >= BUTTON_COUNT {
-                    CONTROLLER_EXCESS_READ
-                }
-                else {
-                    let controller_read = self.controller_1[self.controller_1_button] as u8;
-                    if !self.controller_strobe {
-                        self.controller_1_button += 1;
-                    }
-                    controller_read
-                }
+            JOYPAD_1_REGISTER => {
+                self.joypads.read_player_1()
             }
-            CONTROLLER_2_REGISTER => {
-                if self.controller_2_button >= BUTTON_COUNT {
-                    CONTROLLER_EXCESS_READ
-                }
-                else {
-                    let controller_read = self.controller_2[self.controller_2_button] as u8;
-                    if !self.controller_strobe {
-                        self.controller_2_button += 1;
-                    }
-                    controller_read
-                }
+            JOYPAD_2_REGISTER => {
+                self.joypads.read_player_2()
             }
-            _ => self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
-                cartridge.read_cpu_byte(address)
-            })
+            _ => {
+                self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
+                    cartridge.read_cpu_byte(address)
+                })
+            }
         }
     }
 
@@ -193,9 +120,11 @@ impl Machine {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize]
             }
-            _ => self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
-                cartridge.read_cpu_byte(address)
-            })
+            _ => {
+                self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
+                    cartridge.read_cpu_byte(address)
+                })
+            }
         }
     }
 
@@ -204,17 +133,31 @@ impl Machine {
             0x0000 ..= 0x1FFF => {
                 self.internal_ram[(address & 0x07FF) as usize] = value;
             }
-            0x2000 ..= 0x3FFF => match address & 0b111 {
-                PPU_CONTROL => self.ppu.write_control(value),
-                PPU_MASK => self.ppu.write_mask(value),
-                PPU_OAM_ADDRESS => self.ppu.write_oam_address(value),
-                PPU_OAM_DATA => self.ppu.write_oam_data(value),
-                PPU_SCROLL => self.ppu.write_scroll(value),
-                PPU_VRAM_ADDRESS => if let Some(cartridge) = &mut self.cartridge {
-                    self.ppu.write_vram_address(value, cartridge);
-                },
-                PPU_VRAM_DATA => if let Some(cartridge) = &mut self.cartridge {
-                    self.ppu.write_vram_data(value, cartridge);
+            0x2000 ..= 0x3FFF => match address & 0x2007 {
+                PPU_CONTROL => {
+                    self.ppu.write_control(value);
+                }
+                PPU_MASK => {
+                    self.ppu.write_mask(value);
+                }
+                PPU_OAM_ADDRESS => {
+                    self.ppu.write_oam_address(value);
+                }
+                PPU_OAM_DATA => {
+                    self.ppu.write_oam_data(value);
+                }
+                PPU_SCROLL => {
+                    self.ppu.write_scroll(value);
+                }
+                PPU_VRAM_ADDRESS => {
+                    if let Some(cartridge) = &mut self.cartridge {
+                        self.ppu.write_vram_address(value, cartridge);
+                    }
+                }
+                PPU_VRAM_DATA => {
+                    if let Some(cartridge) = &mut self.cartridge {
+                        self.ppu.write_vram_data(value, cartridge);
+                    }
                 }
                 _ => {}
             }
@@ -230,33 +173,33 @@ impl Machine {
             APU_STATUS => {
                 self.apu.write_status(value);
             }
-            CONTROLLER_1_REGISTER => {
-                self.controller_strobe = value & 1 != 0;
-                self.controller_1_button = 0;
-                self.controller_2_button = 0;
+            JOYPAD_1_REGISTER => {
+                self.joypads.write_strobe(value);
             }
             APU_FRAME_COUNTER => {
                 self.apu.write_frame_counter(value);
             }
-            _ => if let Some(cartridge) = &mut self.cartridge {
-                cartridge.write_cpu_byte(address, value);
+            _ => {
+                if let Some(cartridge) = &mut self.cartridge {
+                    cartridge.write_cpu_byte(address, value);
+                }
             }
         }
     }
 
-    pub fn read_pair(&mut self, address: u16) -> u16 {
+    pub fn read_word(&mut self, address: u16) -> u16 {
         let low = self.read_byte(address) as u16;
         let high = self.read_byte(address.wrapping_add(1)) as u16;
         (high << 8) | low
     }
 
-    pub fn read_pair_silent(&self, address: u16) -> u16 {
+    pub fn read_word_silent(&self, address: u16) -> u16 {
         let low = self.read_byte_silent(address) as u16;
         let high = self.read_byte_silent(address.wrapping_add(1)) as u16;
         (high << 8) | low
     }
 
-    pub fn read_pair_paged(&mut self, address: u16) -> u16 {
+    pub fn read_word_paged(&mut self, address: u16) -> u16 {
         let low = self.read_byte(address) as u16;
         // Address increment must not affect page number
         let high_address = (address & 0xFF00) | (address.wrapping_add(1) & 0x00FF);
@@ -264,7 +207,7 @@ impl Machine {
         (high << 8) | low
     }
 
-    pub fn read_pair_paged_silent(&self, address: u16) -> u16 {
+    pub fn read_word_paged_silent(&self, address: u16) -> u16 {
         let low = self.read_byte_silent(address) as u16;
         // Address increment must not affect page number
         let high_address = (address & 0xFF00) | (address.wrapping_add(1) & 0x00FF);
@@ -272,7 +215,7 @@ impl Machine {
         (high << 8) | low
     }
 
-    pub fn write_pair(&mut self, address: u16, value: u16) {
+    pub fn write_word(&mut self, address: u16, value: u16) {
         let low = (value & 0x00FF) as u8;
         let high = (value >> 8) as u8;
         self.write_byte(address, low);
@@ -291,12 +234,12 @@ impl Machine {
         self.read_byte(address)
     }
 
-    pub fn stack_push_pair(&mut self, value: u16) {
+    pub fn stack_push_word(&mut self, value: u16) {
         self.stack_push_byte((value >> 8) as u8);
         self.stack_push_byte((value & 0x00FF) as u8);
     }
 
-    pub fn stack_pull_pair(&mut self) -> u16 {
+    pub fn stack_pull_word(&mut self) -> u16 {
         let low = self.stack_pull_byte();
         let high = self.stack_pull_byte();
         (high as u16) << 8 | low as u16
@@ -390,7 +333,7 @@ impl Machine {
             return;
         };
 
-        // TODO
+        // TODO: accuracy
         if !self.cpu.dmc_dma_active {
             if is_reload == self.cpu.is_put_cycle {
                 self.cpu.dmc_dma_active = true;

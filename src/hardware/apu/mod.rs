@@ -1,5 +1,5 @@
 use std::sync::mpsc::Sender;
-use crate::hardware::DelayedFlag;
+use crate::hardware::timing::DelayedFlag;
 use channel::*;
 
 pub mod channel;
@@ -71,7 +71,7 @@ impl AudioProcessingUnit {
             noise_channel: NoiseChannel::new(),
             delta_modulation_channel: DeltaModulationChannel::new(),
             sequencer_mode: SequencerMode::FourStep,
-            frame_irq_inhibited: false,
+            frame_irq_inhibited: true,
             second_half_cycle: false,
             frame_irq_asserted: false,
             frame_counter: 0,
@@ -111,6 +111,7 @@ impl AudioProcessingUnit {
     }
 
     pub fn reset(&mut self) {
+        self.frame_irq_inhibited = true;
         self.pulse_channel_1.set_enabled(false);
         self.pulse_channel_2.set_enabled(false);
         self.triangle_channel.set_enabled(false);

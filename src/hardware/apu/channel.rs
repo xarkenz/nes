@@ -1,39 +1,9 @@
 const LENGTH_TABLE: [u8; 32] = [
-    0x0A,
-    0xFE,
-    0x14,
-    0x02,
-    0x28,
-    0x04,
-    0x50,
-    0x06,
-    0xA0,
-    0x08,
-    0x3C,
-    0x0A,
-    0x0E,
-    0x0C,
-    0x1A,
-    0x0E,
-    0x0C,
-    0x10,
-    0x18,
-    0x12,
-    0x30,
-    0x14,
-    0x60,
-    0x16,
-    0xC0,
-    0x18,
-    0x48,
-    0x1A,
-    0x10,
-    0x1C,
-    0x20,
-    0x1E,
+    0x0A, 0xFE, 0x14, 0x02, 0x28, 0x04, 0x50, 0x06, 0xA0, 0x08, 0x3C, 0x0A, 0x0E, 0x0C, 0x1A, 0x0E,
+    0x0C, 0x10, 0x18, 0x12, 0x30, 0x14, 0x60, 0x16, 0xC0, 0x18, 0x48, 0x1A, 0x10, 0x1C, 0x20, 0x1E,
 ];
 
-const PULSE_DUTY_LEVELS: [[u8; 8]; 4] = [
+const PULSE_DUTY_SEQUENCES: [[u8; 8]; 4] = [
     [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xF],
     [0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xF, 0xF],
     [0x0, 0x0, 0x0, 0x0, 0xF, 0xF, 0xF, 0xF],
@@ -62,6 +32,7 @@ pub struct PulseChannel {
     sweep_timer: u8,
     sweep_reload: bool,
     sweep_is_muting: bool,
+    current_sequence: &'static [u8; 8],
     output_level: u8,
 }
 
@@ -79,6 +50,7 @@ impl PulseChannel {
             target_sequence_period: 0,
             sequence_timer: 0,
             sequence_index: 0,
+            current_sequence: &PULSE_DUTY_SEQUENCES[0],
             decay_level: 0,
             decay_timer: 0,
             sweep_enabled: false,
@@ -120,6 +92,7 @@ impl PulseChannel {
                 self.constant_volume = value & 0b10000 != 0;
                 self.halt_length_counter = value & 0b100000 != 0;
                 self.duty = value >> 6;
+                self.current_sequence = &PULSE_DUTY_SEQUENCES[self.duty as usize];
                 self.update_output_level();
             }
             0b01 => { // $4001, $4005
@@ -215,7 +188,7 @@ impl PulseChannel {
     }
 
     fn update_output_level(&mut self) {
-        self.output_level = PULSE_DUTY_LEVELS[self.duty as usize][self.sequence_index as usize];
+        self.output_level = self.current_sequence[self.sequence_index as usize];
         if self.constant_volume {
             self.output_level &= self.envelope_parameter;
         }
@@ -231,7 +204,7 @@ impl PulseChannel {
     }
 }
 
-const TRIANGLE_LEVELS: [u8; 32] = [
+const TRIANGLE_SEQUENCE: [u8; 32] = [
     0xF, 0xE, 0xD, 0xC, 0xB, 0xA, 0x9, 0x8, 0x7, 0x6, 0x5, 0x4, 0x3, 0x2, 0x1, 0x0,
     0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF,
 ];
@@ -261,7 +234,7 @@ impl TriangleChannel {
             sequence_period: 0,
             sequence_timer: 0,
             sequence_index: 0,
-            output_level: TRIANGLE_LEVELS[0],
+            output_level: TRIANGLE_SEQUENCE[0],
         }
     }
 
@@ -315,7 +288,7 @@ impl TriangleChannel {
             self.sequence_timer = self.sequence_period;
             if self.length_counter > 0 && self.linear_counter > 0 {
                 self.sequence_index = self.sequence_index.wrapping_add(1) & 0b11111;
-                self.output_level = TRIANGLE_LEVELS[self.sequence_index as usize];
+                self.output_level = TRIANGLE_SEQUENCE[self.sequence_index as usize];
             }
         }
         else {

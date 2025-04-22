@@ -1,4 +1,4 @@
-use crate::loader::*;
+use crate::hardware::cartridge::NESFileHeader;
 
 pub trait Mapper {
     fn name(&self) -> &'static str;
@@ -25,7 +25,7 @@ pub trait Mapper {
         // No-op by default
         let _ = (address, value);
     }
-    
+
     fn debug_print_state(&self);
 }
 
@@ -85,12 +85,12 @@ impl BuiltinNametables {
             ],
         }
     }
-    
+
     pub fn read_byte(&self, address: u16) -> u8 {
         let index = self.nametable_index(address);
         self.nametables[index][(address & 0x03FF) as usize]
     }
-    
+
     pub fn write_byte(&mut self, address: u16, value: u8) {
         let index = self.nametable_index(address);
         self.nametables[index][(address & 0x03FF) as usize] = value;

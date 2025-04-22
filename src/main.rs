@@ -4,12 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::HostTrait;
 use minifb::{Key, Scale, Window, WindowOptions};
 use hardware::*;
-use loader::*;
 use util::*;
 use crate::audio::ReceiverSignal;
 
 pub mod hardware;
-pub mod loader;
 pub mod audio;
 pub mod util;
 
@@ -26,15 +24,15 @@ pub fn main() {
             eprintln!("Warning: Failed to setup Ctrl+C handler: {}", error);
         }
     }
-    let keyboard_interrupt = || {
+    let keyboard_interrupt = move || {
         keyboard_interrupt_flag.swap(false, Ordering::Relaxed)
     };
 
     let mut machine = Machine::new();
     let mut audio_runtime = audio::AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
-    let mut user_input = String::new();
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
     let mut log_sound = false;
+    let mut user_input = String::new();
 
     {
         let mut pal_file = std::fs::File::open("2C02G_wiki.pal")
@@ -69,7 +67,7 @@ pub fn main() {
                 }
             };
 
-            let cartridge = match Cartridge::parse_nes(&mut file) {
+            let cartridge = match cartridge::Cartridge::parse_nes(&mut file) {
                 Ok(file) => file,
                 Err(error) => {
                     eprintln!("Error: Failed to parse file: {error}");
@@ -141,7 +139,7 @@ pub fn main() {
             }
         }
         else if command.eq_ignore_ascii_case("StepNMI") {
-            let nmi_handler_address = machine.read_pair(NMI_VECTOR);
+            let nmi_handler_address = machine.read_word(NMI_VECTOR);
             while !keyboard_interrupt() && machine.cpu.program_counter != nmi_handler_address {
                 machine.tick();
             }
@@ -211,7 +209,7 @@ pub fn main() {
                     continue;
                 }
             };
-            let value = machine.read_pair(address);
+            let value = machine.read_word(address);
             println!("Pair at address ${address:04X}: ${value:04X}");
         }
         else if command.eq_ignore_ascii_case("SetByte") {
@@ -256,8 +254,8 @@ pub fn main() {
                     continue;
                 }
             };
-            let old_value = machine.read_pair_silent(address);
-            machine.write_pair(address, value);
+            let old_value = machine.read_word_silent(address);
+            machine.write_word(address, value);
             println!("Pair at address ${address:04X}: ${old_value:04X} -> ${value:04X}");
         }
         else if command.eq_ignore_ascii_case("Dis") {
@@ -269,7 +267,7 @@ pub fn main() {
                 }
             };
             let opcode = machine.read_byte(address);
-            let instruction = instructions::Instruction::decode(opcode);
+            let instruction = cpu::instruction::Instruction::decode(opcode);
             let disassembly = instruction.disassemble(&machine, address);
             match instruction.size_bytes() {
                 2 => {
@@ -505,17 +503,18 @@ pub fn main() {
             window.set_target_fps(target_fps);
 
             while window.is_open() {
-                machine.controller_1.fill(false);
+                machine.joypads.player_1.fill(false);
                 for key in window.get_keys() {
+                    use hardware::joypad::*;
                     match key {
-                        Key::K => machine.controller_1[BUTTON_A] = true,
-                        Key::J => machine.controller_1[BUTTON_B] = true,
-                        Key::Tab => machine.controller_1[BUTTON_SELECT] = true,
-                        Key::Space => machine.controller_1[BUTTON_START] = true,
-                        Key::W => machine.controller_1[BUTTON_UP] = true,
-                        Key::S => machine.controller_1[BUTTON_DOWN] = true,
-                        Key::A => machine.controller_1[BUTTON_LEFT] = true,
-                        Key::D => machine.controller_1[BUTTON_RIGHT] = true,
+                        Key::K => machine.joypads.player_1[BUTTON_A] = true,
+                        Key::J => machine.joypads.player_1[BUTTON_B] = true,
+                        Key::Tab => machine.joypads.player_1[BUTTON_SELECT] = true,
+                        Key::Space => machine.joypads.player_1[BUTTON_START] = true,
+                        Key::W => machine.joypads.player_1[BUTTON_UP] = true,
+                        Key::S => machine.joypads.player_1[BUTTON_DOWN] = true,
+                        Key::A => machine.joypads.player_1[BUTTON_LEFT] = true,
+                        Key::D => machine.joypads.player_1[BUTTON_RIGHT] = true,
                         _ => {}
                     }
                 }

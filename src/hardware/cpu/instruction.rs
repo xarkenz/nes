@@ -1,4 +1,4 @@
-use super::*;
+use crate::hardware::*;
 
 #[derive(Copy, Clone, Debug)]
 struct Operation {
@@ -40,10 +40,10 @@ impl AddressingMode {
             ZeroPage => format!("{mnemonic} ${:02X}", machine.read_byte_silent(operand_address)),
             ZeroPageX => format!("{mnemonic} ${:02X},X", machine.read_byte_silent(operand_address)),
             ZeroPageY => format!("{mnemonic} ${:02X},Y", machine.read_byte_silent(operand_address)),
-            Absolute => format!("{mnemonic} ${:04X}", machine.read_pair_silent(operand_address)),
-            AbsoluteX => format!("{mnemonic} ${:04X},X", machine.read_pair_silent(operand_address)),
-            AbsoluteY => format!("{mnemonic} ${:04X},Y", machine.read_pair_silent(operand_address)),
-            Indirect => format!("{mnemonic} (${:04X})", machine.read_pair_silent(operand_address)),
+            Absolute => format!("{mnemonic} ${:04X}", machine.read_word_silent(operand_address)),
+            AbsoluteX => format!("{mnemonic} ${:04X},X", machine.read_word_silent(operand_address)),
+            AbsoluteY => format!("{mnemonic} ${:04X},Y", machine.read_word_silent(operand_address)),
+            Indirect => format!("{mnemonic} (${:04X})", machine.read_word_silent(operand_address)),
             IndirectX => format!("{mnemonic} (${:02X},X)", machine.read_byte_silent(operand_address)),
             IndirectY => format!("{mnemonic} (${:02X}),Y", machine.read_byte_silent(operand_address)),
         }
@@ -77,25 +77,25 @@ impl AddressingMode {
                 (machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_y) as u16, false)
             }
             Absolute => {
-                (machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), false)
+                (machine.read_word(machine.cpu.program_counter.wrapping_sub(2)), false)
             }
             AbsoluteX => {
-                page_crossing_add(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_x as u16)
+                page_crossing_add(machine.read_word(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_x as u16)
             }
             AbsoluteY => {
-                page_crossing_add(machine.read_pair(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_y as u16)
+                page_crossing_add(machine.read_word(machine.cpu.program_counter.wrapping_sub(2)), machine.cpu.register_y as u16)
             }
             Indirect => {
-                let address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
-                (machine.read_pair_paged(address), false)
+                let address = machine.read_word(machine.cpu.program_counter.wrapping_sub(2));
+                (machine.read_word_paged(address), false)
             }
             IndirectX => {
                 let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)).wrapping_add(machine.cpu.register_x) as u16;
-                (machine.read_pair_paged(address), false)
+                (machine.read_word_paged(address), false)
             }
             IndirectY => {
                 let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16;
-                page_crossing_add(machine.read_pair_paged(address), machine.cpu.register_y as u16)
+                page_crossing_add(machine.read_word_paged(address), machine.cpu.register_y as u16)
             }
             _ => panic!("cannot calculate address for addressing mode")
         }
@@ -463,10 +463,10 @@ fn process_branch(machine: &mut Machine) {
 const IRQ: Operation = Operation {
     mnemonic: "IRQ",
     function: |_, machine| {
-        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_word(machine.cpu.program_counter);
         machine.stack_push_byte(machine.cpu.get_status_byte(false));
         machine.cpu.interrupt_disable_flag = true;
-        machine.cpu.program_counter = machine.read_pair(IRQ_VECTOR);
+        machine.cpu.program_counter = machine.read_word(IRQ_VECTOR);
     },
 };
 
@@ -475,9 +475,9 @@ const IRQ: Operation = Operation {
 const NMI: Operation = Operation {
     mnemonic: "NMI",
     function: |_, machine| {
-        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_word(machine.cpu.program_counter);
         machine.stack_push_byte(machine.cpu.get_status_byte(false));
-        machine.cpu.program_counter = machine.read_pair(NMI_VECTOR);
+        machine.cpu.program_counter = machine.read_word(NMI_VECTOR);
     },
 };
 
@@ -631,10 +631,10 @@ const BPL: Operation = Operation {
 const BRK: Operation = Operation {
     mnemonic: "BRK",
     function: |_, machine| {
-        machine.stack_push_pair(machine.cpu.program_counter);
+        machine.stack_push_word(machine.cpu.program_counter);
         machine.stack_push_byte(machine.cpu.get_status_byte(true));
         machine.cpu.interrupt_disable_flag = true;
-        machine.cpu.program_counter = machine.read_pair(IRQ_VECTOR);
+        machine.cpu.program_counter = machine.read_word(IRQ_VECTOR);
     },
 };
 
@@ -847,7 +847,7 @@ const JSR: Operation = Operation {
     mnemonic: "JSR",
     function: |addressing_mode, machine| {
         let (address, _) = addressing_mode.calculate_address(machine);
-        machine.stack_push_pair(machine.cpu.program_counter.wrapping_sub(1));
+        machine.stack_push_word(machine.cpu.program_counter.wrapping_sub(1));
         machine.cpu.program_counter = address;
     },
 };
@@ -1051,7 +1051,7 @@ const RTI: Operation = Operation {
     mnemonic: "RTI",
     function: |_, machine| {
         let status_byte = machine.stack_pull_byte();
-        let program_counter = machine.stack_pull_pair();
+        let program_counter = machine.stack_pull_word();
         machine.cpu.set_status_byte(status_byte);
         machine.cpu.program_counter = program_counter;
     },
@@ -1062,7 +1062,7 @@ const RTI: Operation = Operation {
 const RTS: Operation = Operation {
     mnemonic: "RTS",
     function: |_, machine| {
-        let program_counter = machine.stack_pull_pair().wrapping_add(1);
+        let program_counter = machine.stack_pull_word().wrapping_add(1);
         machine.cpu.program_counter = program_counter;
     },
 };
@@ -1344,7 +1344,7 @@ const SHX_U: Operation = Operation {
     mnemonic: "SHX*",
     function: |_, machine| {
         // Compute address manually since the literal address is important
-        let literal_address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
+        let literal_address = machine.read_word(machine.cpu.program_counter.wrapping_sub(2));
         let (address, page_crossed) = page_crossing_add(literal_address, machine.cpu.register_y as u16);
         let mask = ((if page_crossed { address } else { literal_address.wrapping_add(0x100) }) >> 8) as u8;
         machine.write_byte(address, machine.cpu.register_x & mask);
@@ -1357,7 +1357,7 @@ const SHY_U: Operation = Operation {
     mnemonic: "SHY*",
     function: |_, machine| {
         // Compute address manually since the literal address is important
-        let literal_address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
+        let literal_address = machine.read_word(machine.cpu.program_counter.wrapping_sub(2));
         let (address, page_crossed) = page_crossing_add(literal_address, machine.cpu.register_x as u16);
         let mask = ((if page_crossed { address } else { literal_address.wrapping_add(0x100) }) >> 8) as u8;
         machine.write_byte(address, machine.cpu.register_y & mask);
@@ -1445,10 +1445,10 @@ const SHA_U: Operation = Operation {
         let literal_address;
         if let IndirectY = addressing_mode {
             let address = machine.read_byte(machine.cpu.program_counter.wrapping_sub(1)) as u16;
-            literal_address = machine.read_pair_paged(address);
+            literal_address = machine.read_word_paged(address);
         }
         else {
-            literal_address = machine.read_pair(machine.cpu.program_counter.wrapping_sub(2));
+            literal_address = machine.read_word(machine.cpu.program_counter.wrapping_sub(2));
         }
         let (address, page_crossed) = page_crossing_add(literal_address, machine.cpu.register_y as u16);
         let mask = ((if page_crossed { address } else { literal_address.wrapping_add(0x100) }) >> 8) as u8;
