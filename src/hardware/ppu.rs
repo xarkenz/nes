@@ -553,7 +553,7 @@ impl PictureProcessingUnit {
         if self.vram_address & 0b11101_00000 == 0b11101_00000 {
             // Coarse Y is either 29 (last row of the screen) or will overflow the 5-bit field
             // If coarse Y is 29, switch to the vertically adjacent nametable
-            self.vram_address ^= (self.vram_address & 0b00010_00000) << 5;
+            self.vram_address ^= (!self.vram_address & 0b00010_00000) << 5;
             // Simulate the overflow by setting the field to 0
             self.vram_address &= !0b11111_00000;
         }

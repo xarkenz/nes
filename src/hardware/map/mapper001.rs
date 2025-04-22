@@ -44,7 +44,7 @@ impl Mapper001 {
         }
 
         let mut mapper = Self {
-            nametables: BuiltinNametables::new(header.nametable_mirroring),
+            nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
             shift_register: Self::SHIFT_REGISTER_RESET,
@@ -144,11 +144,11 @@ impl Mapper for Mapper001 {
             match address {
                 0x8000 ..= 0x9FFF => {
                     // Control
-                    self.nametables.mirroring = match self.shift_register & 0b00011 {
-                        0b00 => NametableMirroring::OneScreenLower,
-                        0b01 => NametableMirroring::OneScreenUpper,
-                        0b10 => NametableMirroring::Vertical,
-                        0b11 => NametableMirroring::Horizontal,
+                    self.nametables.arrangement = match self.shift_register & 0b00011 {
+                        0b00 => NametableArrangement::OneScreenLower,
+                        0b01 => NametableArrangement::OneScreenUpper,
+                        0b10 => NametableArrangement::Horizontal,
+                        0b11 => NametableArrangement::Vertical,
                         _ => unreachable!(),
                     };
                     self.fix_last_prg_bank = self.shift_register & 0b00100 != 0;
@@ -211,7 +211,6 @@ impl Mapper for Mapper001 {
 
     fn debug_print_state(&self) {
         println!("{}:", self.name());
-        println!("    Nametable mirroring: {}", self.nametables.mirroring);
-        println!("    TODO");
+        println!("    Nametable arrangement: {}", self.nametables.arrangement);
     }
 }

@@ -54,7 +54,7 @@ impl Mapper004 {
         }
 
         let mut mapper = Self {
-            nametables: BuiltinNametables::new(header.nametable_mirroring),
+            nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
             prg_ram: Box::new([0; PRG_RAM_SIZE]),
@@ -89,7 +89,7 @@ impl Mapper004 {
         // I love pointlessly doing branchless programming
         let swappable_bank_index = (self.prg_bank_mode_1 as usize) << 1;
         let fixed_bank_index = swappable_bank_index ^ 0b10;
-        
+
         self.prg_bank_indices[swappable_bank_index] = self.prg_indices(self.bank_registers[6]);
         self.prg_bank_indices[1] = self.prg_indices(self.bank_registers[7]);
         self.prg_bank_indices[fixed_bank_index] = self.prg_indices(self.prg_bank_mask - 1);
@@ -218,10 +218,10 @@ impl Mapper for Mapper004 {
             0xA000 ..= 0xBFFF => {
                 // Even: Nametable Mirroring, Odd: PRG-RAM Protect
                 if address & 1 == 0 {
-                    self.nametables.mirroring = if value & 1 == 0 {
-                        NametableMirroring::Horizontal
+                    self.nametables.arrangement = if value & 1 != 0 {
+                        NametableArrangement::Vertical
                     } else {
-                        NametableMirroring::Vertical
+                        NametableArrangement::Horizontal
                     };
                 }
                 else {
@@ -286,7 +286,7 @@ impl Mapper for Mapper004 {
         println!("                  CP---RRR");
         println!("    Bank select: %{:08b}", bank_select);
         println!("    Bank registers: {:?}", self.bank_registers);
-        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+        println!("    Nametable arrangement: {}", self.nametables.arrangement);
         println!("    IRQ trigger type: {}", self.irq_trigger);
         println!("    IRQ enabled: {}", self.irq_enabled);
         println!("    IRQ reload value: {}", self.irq_reload_value);

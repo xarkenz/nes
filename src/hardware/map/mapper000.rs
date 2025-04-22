@@ -27,7 +27,7 @@ impl Mapper000 {
         let mut prg_chunks = prg_chunks.into_iter();
         let mut chr_chunks = chr_chunks.into_iter();
         Ok(Self {
-            nametables: BuiltinNametables::new(header.nametable_mirroring),
+            nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunk_0: prg_chunks.next().unwrap(),
             prg_chunk_1: prg_chunks.next(),
             chr_chunk_0: chr_chunks.next().unwrap(),
@@ -79,6 +79,6 @@ impl Mapper for Mapper000 {
     fn debug_print_state(&self) {
         println!("{}:", self.name());
         println!("    PRG-ROM chunks: {}", if self.prg_chunk_1.is_some() { 2 } else { 1 });
-        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+        println!("    Nametable arrangement: {}", self.nametables.arrangement);
     }
 }

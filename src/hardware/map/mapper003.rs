@@ -36,7 +36,7 @@ impl Mapper003 {
         }
 
         let mapper = Self {
-            nametables: BuiltinNametables::new(header.nametable_mirroring),
+            nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
             prg_ram: Box::new([0; PRG_RAM_SIZE]),
@@ -100,7 +100,7 @@ impl Mapper for Mapper003 {
 
     fn debug_print_state(&self) {
         println!("{}:", self.name());
-        println!("    Nametable mirroring: {}", self.nametables.mirroring);
+        println!("    Nametable arrangement: {}", self.nametables.arrangement);
         println!("    CHR bank: {}", self.chr_bank_chunk);
     }
 }

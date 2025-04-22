@@ -40,37 +40,45 @@ pub type ChrChunk = Box<[u8; CHR_CHUNK_SIZE]>;
 pub type Nametable = Box<[u8; NAMETABLE_SIZE]>;
 
 #[derive(Copy, Clone, Debug)]
-pub enum NametableMirroring {
+pub enum NametableArrangement {
     /// CIRAM A10 <- PPU A11
-    Horizontal,
-    /// CIRAM A10 <- PPU A10
     Vertical,
+    /// CIRAM A10 <- PPU A10
+    Horizontal,
     /// CIRAM A10 <- 0
     OneScreenLower,
     /// CIRAM A10 <- 1
     OneScreenUpper,
 }
 
-impl std::fmt::Display for NametableMirroring {
+impl std::fmt::Display for NametableArrangement {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            NametableMirroring::Horizontal => write!(f, "Horizontal (CIRAM A10 <- PPU A11)"),
-            NametableMirroring::Vertical => write!(f, "Vertical (CIRAM A10 <- PPU A10)"),
-            NametableMirroring::OneScreenLower => write!(f, "One screen, lower bank (CIRAM A10 <- 0)"),
-            NametableMirroring::OneScreenUpper => write!(f, "One screen, upper bank (CIRAM A10 <- 1)"),
+            NametableArrangement::Vertical => {
+                write!(f, "Two screens, vertical (CIRAM A10 <- PPU A11)")
+            }
+            NametableArrangement::Horizontal => {
+                write!(f, "Two screens, horizontal (CIRAM A10 <- PPU A10)")
+            }
+            NametableArrangement::OneScreenLower => {
+                write!(f, "One screen, lower bank (CIRAM A10 <- 0)")
+            }
+            NametableArrangement::OneScreenUpper => {
+                write!(f, "One screen, upper bank (CIRAM A10 <- 1)")
+            }
         }
     }
 }
 
 pub struct BuiltinNametables {
-    pub mirroring: NametableMirroring,
+    pub arrangement: NametableArrangement,
     pub nametables: [Nametable; 2],
 }
 
 impl BuiltinNametables {
-    pub fn new(mirroring: NametableMirroring) -> Self {
+    pub fn new(arrangement: NametableArrangement) -> Self {
         Self {
-            mirroring,
+            arrangement,
             nametables: [
                 Box::new([0; NAMETABLE_SIZE]),
                 Box::new([0; NAMETABLE_SIZE]),
@@ -89,11 +97,11 @@ impl BuiltinNametables {
     }
 
     fn nametable_index(&self, address: u16) -> usize {
-        match self.mirroring {
-            NametableMirroring::Horizontal => (address >> 11 & 1) as usize,
-            NametableMirroring::Vertical => (address >> 10 & 1) as usize,
-            NametableMirroring::OneScreenLower => 0,
-            NametableMirroring::OneScreenUpper => 1,
+        match self.arrangement {
+            NametableArrangement::Vertical => (address >> 11 & 1) as usize,
+            NametableArrangement::Horizontal => (address >> 10 & 1) as usize,
+            NametableArrangement::OneScreenLower => 0,
+            NametableArrangement::OneScreenUpper => 1,
         }
     }
 }

@@ -16,7 +16,7 @@ pub struct NESFileHeader {
     pub version: NESFileVersion,
     pub mapper_number: usize,
     pub submapper_number: usize,
-    pub nametable_mirroring: NametableMirroring,
+    pub nametable_arrangement: NametableArrangement,
     pub uses_custom_nametables: bool,
     pub has_backup_battery: bool,
     pub has_trainer: bool,
@@ -48,10 +48,10 @@ impl Cartridge {
             },
             mapper_number: (header_data[6] as usize) >> 4,
             submapper_number: 0,
-            nametable_mirroring: if header_data[6] & 0b00000001 == 0 {
-                NametableMirroring::Horizontal
+            nametable_arrangement: if header_data[6] & 0b00000001 == 0 {
+                NametableArrangement::Vertical
             } else {
-                NametableMirroring::Vertical
+                NametableArrangement::Horizontal
             },
             uses_custom_nametables: header_data[6] & 0b00001000 != 0,
             has_backup_battery: header_data[6] & 0b00000010 != 0,

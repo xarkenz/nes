@@ -446,6 +446,23 @@ pub fn main() {
                 }
             }
         }
+        else if command.eq_ignore_ascii_case("Volume") {
+            if argument.is_empty() {
+                println!("Current volume is {}.", audio_runtime.volume());
+                continue;
+            }
+            match argument.parse::<f32>() {
+                Ok(volume) if 0.0 <= volume && volume <= 1.0 => {
+                    audio_runtime.set_volume(volume);
+                }
+                Ok(..) => {
+                    eprintln!("Error: Volume out of range.")
+                }
+                Err(error) => {
+                    eprintln!("Error: Invalid volume: {error}");
+                }
+            }
+        }
         else if command.eq_ignore_ascii_case("LogSound") {
             log_sound = true;
             println!("Sound logging is now enabled.");

@@ -120,6 +120,7 @@ impl PulseChannel {
                 self.constant_volume = value & 0b10000 != 0;
                 self.halt_length_counter = value & 0b100000 != 0;
                 self.duty = value >> 6;
+                self.update_output_level();
             }
             0b01 => { // $4001, $4005
                 self.sweep_shift_amount = value & 0b111;
@@ -143,8 +144,10 @@ impl PulseChannel {
                     self.length_counter = LENGTH_TABLE[(value >> 3) as usize];
                 }
                 self.sequence_index = 0;
+                self.sequence_timer = self.sequence_period;
                 self.restart_envelope = true;
                 self.update_sweep_target();
+                self.update_output_level();
             }
             _ => unreachable!()
         }
@@ -166,6 +169,7 @@ impl PulseChannel {
             self.restart_envelope = false;
             self.decay_timer = self.envelope_parameter;
             self.decay_level = 15;
+            self.update_output_level();
         }
         else if self.decay_timer == 0 {
             self.decay_timer = self.envelope_parameter;
