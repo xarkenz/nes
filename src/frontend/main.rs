@@ -30,14 +30,12 @@ pub fn main() {
     let mut audio_runtime = AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
     let mut log_sound = false;
+    let mut color_options = ppu::color::ColorOptions::default();
+    color_options.saturation = 1.5;
+
+    machine.ppu.color_converter.generate_palette(color_options.clone());
+
     let mut user_input = String::new();
-
-    {
-        let mut pal_file = std::fs::File::open("src/frontend/2C02G_wiki.pal")
-            .expect("failed to open pal file");
-        machine.ppu.color_converter.parse_pal(&mut pal_file).unwrap();
-    }
-
     loop {
         print!("> ");
         std::io::stdout().flush().unwrap();
@@ -77,6 +75,27 @@ pub fn main() {
             println!("Successfully loaded cartridge.");
             machine.reset();
             println!("Console reset.");
+        }
+        else if command.eq_ignore_ascii_case("SetColors") {
+            if argument.is_empty() {
+                machine.ppu.color_converter.generate_palette(color_options.clone());
+                println!("Default color palette generated.");
+            }
+            else {
+                let mut file = match std::fs::File::open(argument) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        eprintln!("Error: Failed to open file: {error}");
+                        continue;
+                    }
+                };
+
+                if let Err(error) = machine.ppu.color_converter.parse_pal(&mut file) {
+                    eprintln!("Error: Failed to parse file: {error}");
+                    continue;
+                }
+                println!("Successfully loaded color palette from file.");
+            }
         }
         else if command.eq_ignore_ascii_case("Reset") {
             machine.reset();
