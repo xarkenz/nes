@@ -30,6 +30,7 @@ pub fn main() {
     let mut audio_runtime = AudioRuntime::new(cpal::default_host().default_output_device().unwrap());
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
     let mut log_sound = false;
+    let mut log_fps = false;
     let mut color_options = ppu::color::ColorOptions::default();
     color_options.saturation = 1.5;
 
@@ -63,7 +64,11 @@ pub fn main() {
                 }
             };
 
-            let cartridge = match cartridge::Cartridge::parse_nes(&mut file) {
+            let name = match argument.rsplit_once('/') {
+                Some((_, name)) => name.to_string(),
+                None => argument.to_string(),
+            };
+            let cartridge = match cartridge::Cartridge::parse_nes(name, &mut file) {
                 Ok(file) => file,
                 Err(error) => {
                     eprintln!("Error: Failed to parse file: {error}");
@@ -486,6 +491,14 @@ pub fn main() {
             log_sound = false;
             println!("Sound logging is now disabled.");
         }
+        else if command.eq_ignore_ascii_case("LogFPS") {
+            log_fps = true;
+            println!("FPS logging is now enabled.");
+        }
+        else if command.eq_ignore_ascii_case("NoLogFPS") {
+            log_fps = false;
+            println!("FPS logging is now disabled.");
+        }
         else if command.eq_ignore_ascii_case("Play") {
             use dasp::Signal;
             let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
@@ -514,12 +527,33 @@ pub fn main() {
 
             let mut window_options = WindowOptions::default();
             window_options.scale = Scale::X2;
-            let mut window = Window::new("NES", ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
+            let window_name = match machine.cartridge {
+                Some(ref cartridge) => format!("NES - {}", cartridge.name()),
+                None => "NES - (no cartridge loaded)".to_string(),
+            };
+            let mut window = Window::new(&window_name, ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
 
             window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             window.set_target_fps(target_fps);
 
+            let mut start_time = std::time::Instant::now();
+            let mut frame_rates = Vec::new();
+            let mut is_first_frame = true;
+
             while window.is_open() {
+                if log_fps && !is_first_frame {
+                    let end_time = std::time::Instant::now();
+                    frame_rates.push(1.0 / end_time.duration_since(start_time).as_secs_f32());
+                    start_time = end_time;
+                    if frame_rates.len() >= target_fps {
+                        let average_fps = frame_rates.iter().sum::<f32>() / frame_rates.len() as f32;
+                        let min_fps = frame_rates.iter().copied().reduce(f32::min).unwrap();
+                        let max_fps = frame_rates.iter().copied().reduce(f32::max).unwrap();
+                        println!("FPS: average = {average_fps:.2}, min = {min_fps:.2}, max = {max_fps:.2}");
+                        frame_rates.clear();
+                    }
+                }
+
                 machine.joypads.player_1.fill(false);
                 for key in window.get_keys() {
                     match key {
@@ -541,6 +575,7 @@ pub fn main() {
                 machine.tick();
 
                 window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
+                is_first_frame = false;
             }
 
             machine.apu.disconnect_mixer_output();

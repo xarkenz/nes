@@ -48,6 +48,7 @@ pub struct PictureProcessingUnit {
     color_emphasis: u16,
     color_mask: u16,
     // PPU_STATUS
+    pub disable_vblank_conflict: bool,
     vblank_flag: bool,
     next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
     sprite_0_hit: bool,
@@ -99,6 +100,7 @@ impl PictureProcessingUnit {
             render_sprites_flag: DelayedFlag::new(false),
             color_emphasis: 0,
             color_mask: NORMAL_COLOR_MASK,
+            disable_vblank_conflict: false,
             vblank_flag: false,
             next_vblank_flag: false,
             sprite_0_hit: false,
@@ -369,6 +371,7 @@ impl PictureProcessingUnit {
         match (self.scanline, self.dot) {
             (VBLANK_START_SCANLINE, 0) => {
                 self.next_vblank_flag = true;
+                self.vblank_flag |= self.disable_vblank_conflict;
                 self.in_vblank = true;
             }
             (VBLANK_START_SCANLINE, 3) => {

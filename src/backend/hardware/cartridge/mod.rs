@@ -28,13 +28,14 @@ pub struct NESFileHeader {
 }
 
 pub struct Cartridge {
+    name: String,
     header: NESFileHeader,
     mapper: Box<dyn Mapper>,
     trainer: Option<Box<[u8; TRAINER_SIZE]>>,
 }
 
 impl Cartridge {
-    pub fn parse_nes(reader: &mut impl Read) -> Result<Self, String> {
+    pub fn parse_nes(name: String, reader: &mut impl Read) -> Result<Self, String> {
         let mut header_data = [0_u8; NES_HEADER_SIZE];
         reader.read_exact(&mut header_data).map_err(|err| err.to_string())?;
 
@@ -96,10 +97,15 @@ impl Cartridge {
         let mapper = initialize_mapper(&header, prg_rom, chr_rom)?;
 
         Ok(Self {
+            name,
             header,
             mapper,
             trainer,
         })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn header(&self) -> &NESFileHeader {
