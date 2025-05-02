@@ -1,4 +1,3 @@
-use std::sync::mpsc::Sender;
 use crate::hardware::timing::DelayedFlag;
 use channel::*;
 
@@ -55,7 +54,7 @@ pub struct AudioProcessingUnit {
     frame_irq_asserted: bool,
     frame_counter: u16,
     reset_frame_counter: DelayedFlag<4>,
-    mixer_output: Option<Sender<f32>>,
+    mixer_output: Option<Box<dyn Fn(f32)>>,
     mixer_sample_interval: u16,
     mixer_sample_timer: u16,
     mixer_pulse_table: Box<[f32; 31]>,
@@ -97,7 +96,7 @@ impl AudioProcessingUnit {
         self.mixer_sample_interval = cycles;
     }
 
-    pub fn connect_mixer_output(&mut self, mixer_output: Sender<f32>) {
+    pub fn connect_mixer_output(&mut self, mixer_output: Box<dyn Fn(f32)>) {
         self.send_mixer_output(&mixer_output);
         self.mixer_output = Some(mixer_output);
     }
@@ -257,7 +256,7 @@ impl AudioProcessingUnit {
         self.noise_channel.clock_half_frame();
     }
 
-    fn send_mixer_output(&self, mixer_output: &Sender<f32>) {
+    fn send_mixer_output(&self, mixer_output: &dyn Fn(f32)) {
         let pulse_1 = self.pulse_channel_1.output_level() as usize;
         let pulse_2 = self.pulse_channel_2.output_level() as usize;
         let triangle = self.triangle_channel.output_level() as usize;
@@ -269,7 +268,7 @@ impl AudioProcessingUnit {
         let tnd_output = self.mixer_tnd_table[3 * triangle + 2 * noise + dmc];
 
         // Send the mixer output; not really problematic if it fails, though
-        mixer_output.send(pulse_output + tnd_output).ok();
+        mixer_output(pulse_output + tnd_output);
     }
 
     pub fn debug_print_state(&self) {

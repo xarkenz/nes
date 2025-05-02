@@ -354,7 +354,6 @@ impl PictureProcessingUnit {
 
         // Simulate hardware multiplexing to replicate quirky PPU_STATUS read behavior
         self.vblank_flag = self.next_vblank_flag;
-        self.sprite_0_hit_timer >>= 1;
 
         // Handle rendering if either background or sprites are enabled
         if (self.render_background_flag.get_delayed() || self.render_sprites_flag.get_delayed()) && cartridge.is_some() {
@@ -366,6 +365,7 @@ impl PictureProcessingUnit {
         }
 
         self.sprite_0_hit |= self.sprite_0_hit_timer & 1 != 0;
+        self.sprite_0_hit_timer >>= 1;
 
         // On certain cycles, update status flags and/or trigger NMI
         match (self.scanline, self.dot) {

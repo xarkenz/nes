@@ -500,15 +500,20 @@ pub fn main() {
             println!("FPS logging is now disabled.");
         }
         else if command.eq_ignore_ascii_case("Play") {
+            let audio_tolerance = 1.0;
+            let mixer_sample_capacity = (machine.apu.mixer_samples_per_frame() * audio_tolerance).ceil().max(1.0) as usize;
+            let (mixer_sender, mixer_receiver) = std::sync::mpsc::sync_channel(mixer_sample_capacity);
+
+            machine.apu.connect_mixer_output(Box::new(move |mixer_sample| {
+                mixer_sender.send(mixer_sample * 2.0 - 1.0).ok();
+            }));
+
             use dasp::Signal;
-            let (mixer_sender, mixer_receiver) = std::sync::mpsc::channel();
-            machine.apu.connect_mixer_output(mixer_sender);
             if log_sound {
                 let mut log_file = std::fs::File::create("target/sndlog.txt").unwrap();
                 let mut last_frame = 0.0;
                 audio_runtime.connect(
                     ReceiverSignal::new(mixer_receiver).map(move |frame| {
-                        let frame = frame * 2.0 - 1.0;
                         if frame != last_frame {
                             writeln!(log_file, "{frame}").ok();
                             last_frame = frame;
@@ -520,7 +525,7 @@ pub fn main() {
             }
             else {
                 audio_runtime.connect(
-                    ReceiverSignal::new(mixer_receiver).map(|frame| frame * 2.0 - 1.0),
+                    ReceiverSignal::new(mixer_receiver),
                     machine.apu.mixer_samples_per_frame() * target_fps as f64,
                 );
             }
@@ -534,7 +539,7 @@ pub fn main() {
             let mut window = Window::new(&window_name, ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
 
             window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
-            window.set_target_fps(target_fps);
+            window.set_target_fps(0);
 
             let mut start_time = std::time::Instant::now();
             let mut frame_rates = Vec::new();

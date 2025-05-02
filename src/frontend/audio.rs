@@ -73,7 +73,7 @@ impl AudioRuntime {
             cpal::SampleFormat::F32 => self.connect_with_format::<f32, _>(config, converter),
             cpal::SampleFormat::I16 => self.connect_with_format::<i16, _>(config, converter),
             cpal::SampleFormat::U16 => self.connect_with_format::<u16, _>(config, converter),
-            _ => unimplemented!(),
+            _ => unimplemented!()
         }
     }
 
