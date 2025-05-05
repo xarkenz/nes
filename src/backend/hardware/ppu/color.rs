@@ -12,7 +12,7 @@ pub struct ColorOptions {
 impl ColorOptions {
     pub fn new() -> Self {
         Self {
-            saturation: 1.0,
+            saturation: 1.5,
             contrast: 1.0,
             brightness: 1.0,
             hue_tweak: 0.0,
@@ -42,7 +42,7 @@ impl ColorConverter {
         self.table[(index & 0b111_111111) as usize]
     }
 
-    pub fn parse_pal(&mut self, reader: &mut impl Read) -> std::io::Result<()> {
+    pub fn parse_pal(&mut self, mut reader: impl Read) -> std::io::Result<()> {
         for entry in self.table.iter_mut() {
             let mut rgb = [0_u8; 3];
             if let Err(error) = reader.read_exact(&mut rgb) {

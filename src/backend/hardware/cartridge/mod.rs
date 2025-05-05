@@ -35,7 +35,7 @@ pub struct Cartridge {
 }
 
 impl Cartridge {
-    pub fn parse_nes(name: String, reader: &mut impl Read) -> Result<Self, String> {
+    pub fn parse_nes(name: String, mut reader: impl Read) -> Result<Self, String> {
         let mut header_data = [0_u8; NES_HEADER_SIZE];
         reader.read_exact(&mut header_data).map_err(|err| err.to_string())?;
 

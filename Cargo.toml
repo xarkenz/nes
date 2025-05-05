@@ -16,3 +16,4 @@ cpal = "0.15"
 ctrlc = "3.4"
 dasp = { version = "0.11", features = ["signal", "interpolate", "interpolate-floor"] }
 minifb = "0.28"
+zip = "2.6"

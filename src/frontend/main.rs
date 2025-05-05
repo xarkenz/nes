@@ -5,6 +5,7 @@ use cpal::traits::HostTrait;
 use minifb::{Key, Scale, Window, WindowOptions};
 use nes_backend::hardware::*;
 use nes_backend::util::*;
+use nes_backend::movie::Movie;
 use audio::*;
 
 pub mod audio;
@@ -31,8 +32,8 @@ pub fn main() {
     let mut target_fps = NTSC_FRAMES_PER_SECOND;
     let mut log_sound = false;
     let mut log_fps = false;
-    let mut color_options = ppu::color::ColorOptions::default();
-    color_options.saturation = 1.5;
+    let mut movie = None;
+    let color_options = ppu::color::ColorOptions::default();
 
     machine.ppu.color_converter.generate_palette(color_options.clone());
 
@@ -55,7 +56,7 @@ pub fn main() {
         else if command.eq_ignore_ascii_case("Quit") || command.eq_ignore_ascii_case("Exit") {
             break;
         }
-        else if command.eq_ignore_ascii_case("Load") {
+        else if command.eq_ignore_ascii_case("Load") || command.eq_ignore_ascii_case("SwapLoad") {
             let mut file = match std::fs::File::open(argument) {
                 Ok(file) => file,
                 Err(error) => {
@@ -78,8 +79,10 @@ pub fn main() {
 
             machine.cartridge = Some(cartridge);
             println!("Successfully loaded cartridge.");
-            machine.reset();
-            println!("Console reset.");
+            if command.eq_ignore_ascii_case("Load") {
+                machine.reset();
+                println!("Console reset.");
+            }
         }
         else if command.eq_ignore_ascii_case("SetColors") {
             if argument.is_empty() {
@@ -101,6 +104,48 @@ pub fn main() {
                 }
                 println!("Successfully loaded color palette from file.");
             }
+        }
+        else if command.eq_ignore_ascii_case("SetMovie") {
+            if argument.is_empty() {
+                movie = None;
+                println!("Movie disabled.");
+            }
+            else {
+                let mut file = match std::fs::File::open(argument) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        eprintln!("Error: Failed to open file: {error}");
+                        continue;
+                    }
+                };
+
+                let loaded_movie = match Movie::parse_bk2(&mut file) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        eprintln!("Error: Failed to parse file: {error}");
+                        continue;
+                    }
+                };
+
+                movie = Some(loaded_movie);
+                println!("Successfully loaded movie from file.");
+            }
+        }
+        else if command.eq_ignore_ascii_case("SeekMovie") {
+            let Some(movie) = &mut movie else {
+                eprintln!("Error: No movie loaded.");
+                continue;
+            };
+            let frame = match argument.parse::<i64>() {
+                Ok(frame) => frame,
+                Err(error) => {
+                    eprintln!("Error: Invalid frame offset: {error}");
+                    continue;
+                }
+            };
+
+            movie.frame_offset = frame;
+            println!("Seeked movie to frame offset {frame}.");
         }
         else if command.eq_ignore_ascii_case("Reset") {
             machine.reset();
@@ -544,6 +589,7 @@ pub fn main() {
             let mut start_time = std::time::Instant::now();
             let mut frame_rates = Vec::new();
             let mut is_first_frame = true;
+            let mut is_playing_movie = false;
 
             while window.is_open() {
                 if log_fps && !is_first_frame {
@@ -559,18 +605,28 @@ pub fn main() {
                     }
                 }
 
-                machine.joypads.player_1.fill(false);
-                for key in window.get_keys() {
-                    match key {
-                        Key::K => machine.joypads.player_1[joypad::BUTTON_A] = true,
-                        Key::J => machine.joypads.player_1[joypad::BUTTON_B] = true,
-                        Key::Tab => machine.joypads.player_1[joypad::BUTTON_SELECT] = true,
-                        Key::Space => machine.joypads.player_1[joypad::BUTTON_START] = true,
-                        Key::W => machine.joypads.player_1[joypad::BUTTON_UP] = true,
-                        Key::S => machine.joypads.player_1[joypad::BUTTON_DOWN] = true,
-                        Key::A => machine.joypads.player_1[joypad::BUTTON_LEFT] = true,
-                        Key::D => machine.joypads.player_1[joypad::BUTTON_RIGHT] = true,
-                        _ => {}
+                if let Some(movie_frame) = movie.as_mut().and_then(Movie::next_frame) {
+                    is_playing_movie = true;
+                    movie_frame.apply_inputs(&mut machine);
+                }
+                else {
+                    if is_playing_movie {
+                        println!("Info: Movie finished, user controls restored.");
+                        is_playing_movie = false;
+                    }
+                    machine.joypads.player_1.fill(false);
+                    for key in window.get_keys() {
+                        match key {
+                            Key::K => machine.joypads.player_1[joypad::BUTTON_A] = true,
+                            Key::J => machine.joypads.player_1[joypad::BUTTON_B] = true,
+                            Key::Tab => machine.joypads.player_1[joypad::BUTTON_SELECT] = true,
+                            Key::Space => machine.joypads.player_1[joypad::BUTTON_START] = true,
+                            Key::W => machine.joypads.player_1[joypad::BUTTON_UP] = true,
+                            Key::S => machine.joypads.player_1[joypad::BUTTON_DOWN] = true,
+                            Key::A => machine.joypads.player_1[joypad::BUTTON_LEFT] = true,
+                            Key::D => machine.joypads.player_1[joypad::BUTTON_RIGHT] = true,
+                            _ => {}
+                        }
                     }
                 }
 
@@ -579,8 +635,8 @@ pub fn main() {
                 }
                 machine.tick();
 
-                window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
                 is_first_frame = false;
+                window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             }
 
             machine.apu.disconnect_mixer_output();
