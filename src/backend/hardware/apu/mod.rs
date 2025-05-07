@@ -87,7 +87,7 @@ impl AudioProcessingUnit {
         use crate::hardware::ppu::{PRE_RENDER_SCANLINE, LAST_DOT};
         use crate::hardware::cpu::TICKS_PER_CPU_CYCLE;
         // Calculate CPU cycles per second
-        let ppu_cycles_per_frame = (PRE_RENDER_SCANLINE + 1) as f64 * (LAST_DOT + 1) as f64;
+        let ppu_cycles_per_frame = (PRE_RENDER_SCANLINE + 1) as f64 * (LAST_DOT + 1) as f64 - 1.0;
         let cpu_cycles_per_frame = ppu_cycles_per_frame / TICKS_PER_CPU_CYCLE as f64;
         cpu_cycles_per_frame / self.mixer_sample_interval as f64
     }

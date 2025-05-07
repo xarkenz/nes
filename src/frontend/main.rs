@@ -7,8 +7,10 @@ use nes_backend::hardware::*;
 use nes_backend::util::*;
 use nes_backend::movie::Movie;
 use audio::*;
+use display::*;
 
 pub mod audio;
+pub mod display;
 
 pub fn main() {
     let keyboard_interrupt_flag = Arc::new(AtomicBool::new(false));
@@ -545,12 +547,12 @@ pub fn main() {
             println!("FPS logging is now disabled.");
         }
         else if command.eq_ignore_ascii_case("Play") {
-            let audio_tolerance = 1.0;
-            let mixer_sample_capacity = (machine.apu.mixer_samples_per_frame() * audio_tolerance).ceil().max(1.0) as usize;
-            let (mixer_sender, mixer_receiver) = std::sync::mpsc::sync_channel(mixer_sample_capacity);
+            let max_audio_lag = 1.0;
+            let audio_channel_capacity = (machine.apu.mixer_samples_per_frame() * max_audio_lag).ceil().max(1.0) as usize;
+            let (audio_sender, audio_receiver) = std::sync::mpsc::sync_channel(audio_channel_capacity);
 
             machine.apu.connect_mixer_output(Box::new(move |mixer_sample| {
-                mixer_sender.send(mixer_sample * 2.0 - 1.0).ok();
+                audio_sender.send(mixer_sample * 2.0 - 1.0).ok();
             }));
 
             use dasp::Signal;
@@ -558,7 +560,7 @@ pub fn main() {
                 let mut log_file = std::fs::File::create("target/sndlog.txt").unwrap();
                 let mut last_frame = 0.0;
                 audio_runtime.connect(
-                    ReceiverSignal::new(mixer_receiver).map(move |frame| {
+                    ReceiverSignal::new(audio_receiver).map(move |frame| {
                         if frame != last_frame {
                             writeln!(log_file, "{frame}").ok();
                             last_frame = frame;
@@ -570,7 +572,7 @@ pub fn main() {
             }
             else {
                 audio_runtime.connect(
-                    ReceiverSignal::new(mixer_receiver),
+                    ReceiverSignal::new(audio_receiver),
                     machine.apu.mixer_samples_per_frame() * target_fps as f64,
                 );
             }
@@ -590,6 +592,7 @@ pub fn main() {
             let mut frame_rates = Vec::new();
             let mut is_first_frame = true;
             let mut is_playing_movie = false;
+            let mut frame_timer = FrameTimer::start(target_fps as f64);
 
             while window.is_open() {
                 if log_fps && !is_first_frame {
@@ -637,6 +640,7 @@ pub fn main() {
 
                 is_first_frame = false;
                 window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
+                frame_timer.wait_until_target();
             }
 
             machine.apu.disconnect_mixer_output();
