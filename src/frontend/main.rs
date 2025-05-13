@@ -2,8 +2,9 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::HostTrait;
+use dasp::Signal;
 use minifb::{Key, Scale, Window, WindowOptions};
-use rand::RngCore;
+use rand::Rng;
 use nes_backend::hardware::*;
 use nes_backend::util::*;
 use nes_backend::movie::Movie;
@@ -19,8 +20,8 @@ pub fn main() {
         // Set up Ctrl+C handler
         let keyboard_interrupt_flag = keyboard_interrupt_flag.clone();
         let result = ctrlc::set_handler(move || {
-            keyboard_interrupt_flag.store(true, Ordering::Relaxed);
             println!("Stopping...");
+            keyboard_interrupt_flag.store(true, Ordering::Relaxed);
         });
         if let Err(error) = result {
             eprintln!("Warning: Failed to setup Ctrl+C handler: {}", error);
@@ -556,7 +557,6 @@ pub fn main() {
                 audio_sender.send(mixer_sample * 2.0 - 1.0).ok();
             }));
 
-            use dasp::Signal;
             if log_sound {
                 let mut log_file = std::fs::File::create("target/sndlog.txt").unwrap();
                 let mut last_frame = 0.0;
@@ -645,8 +645,8 @@ pub fn main() {
                 }
 
                 if window.is_key_pressed(Key::LeftBracket, minifb::KeyRepeat::Yes) {
-                    let address = rng.next_u32() as u16 & 0x07FF;
-                    let value = rng.next_u32() as u8;
+                    let address = rng.random::<u16>() & 0x07FF;
+                    let value = rng.random::<u8>();
                     let old_value = machine.read_byte(address);
                     machine.write_byte(address, value);
                     println!("Corrupted ${address:04X} from ${old_value:02X} to ${value:02X}.");

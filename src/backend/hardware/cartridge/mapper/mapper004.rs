@@ -23,6 +23,7 @@ pub struct Mapper004 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
+    chr_writeable: bool,
     prg_ram: Box<[u8; PRG_RAM_SIZE]>,
     bank_registers: [u8; 8],
     register_select: usize,
@@ -43,7 +44,12 @@ pub struct Mapper004 {
 }
 
 impl Mapper004 {
-    pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
+    pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
+        let chr_writeable = chr_chunks.is_empty();
+        if chr_writeable {
+            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
+        }
+
         let mut prg_bank_mask = 0xFF;
         while prg_bank_mask as usize >= (prg_chunks.len() << 1) {
             prg_bank_mask >>= 1;
@@ -57,6 +63,7 @@ impl Mapper004 {
             nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
+            chr_writeable,
             prg_ram: Box::new([0; PRG_RAM_SIZE]),
             bank_registers: [0; 8],
             register_select: 0,
@@ -141,7 +148,6 @@ impl Mapper004 {
             else {
                 self.irq_counter -= 1;
             }
-            // println!("MMC3 counter: ${address:04X} => {}", self.irq_counter);
             if self.irq_enabled {
                 let trigger_condition = match self.irq_trigger {
                     IRQTrigger::Level => self.irq_counter == 0,
@@ -266,14 +272,13 @@ impl Mapper for Mapper004 {
     fn write_ppu_byte(&mut self, address: u16, value: u8) {
         self.check_ppu_address(address);
         match address {
-            0x0000 ..= 0x1FFF => {
-                // TODO: how to detect CHR-RAM?
+            0x0000 ..= 0x1FFF => if self.chr_writeable {
                 let bank_number = (address >> 10) & 0b111;
                 let (chunk_index, byte_offset) = self.chr_bank_indices[bank_number as usize];
                 self.chr_chunks[chunk_index][byte_offset + (address & 0x03FF) as usize] = value;
             }
             _ => {
-                self.nametables.write_byte(address, value)
+                self.nametables.write_byte(address, value);
             }
         }
     }

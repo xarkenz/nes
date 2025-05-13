@@ -12,7 +12,7 @@ pub struct ColorOptions {
 impl ColorOptions {
     pub fn new() -> Self {
         Self {
-            saturation: 1.5,
+            saturation: 2.0,
             contrast: 1.0,
             brightness: 1.0,
             hue_tweak: 0.0,

@@ -4,6 +4,7 @@ pub struct Mapper001 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
+    chr_writeable: bool,
     shift_register: u8,
     separate_prg_banks: bool,
     fix_last_prg_bank: bool,
@@ -11,7 +12,6 @@ pub struct Mapper001 {
     prg_bank_register: u8,
     chr_bank_0_register: u8,
     chr_bank_1_register: u8,
-    chr_write_enable: bool,
     ignore_serial_port_writes: bool,
     prg_bank_mask: u8,
     chr_bank_mask: u8,
@@ -27,11 +27,9 @@ impl Mapper001 {
     const SHIFT_REGISTER_RESET: u8 = 0b10000;
     
     pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
-        let mut chr_write_enable = false;
-        if chr_chunks.is_empty() {
-            // Add CHR-RAM, I guess?
+        let chr_writeable = chr_chunks.is_empty();
+        if chr_writeable {
             chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
-            chr_write_enable = true;
         }
 
         let mut prg_bank_mask = 0b1111;
@@ -47,6 +45,7 @@ impl Mapper001 {
             nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
+            chr_writeable,
             shift_register: Self::SHIFT_REGISTER_RESET,
             separate_prg_banks: true,
             fix_last_prg_bank: true,
@@ -54,7 +53,6 @@ impl Mapper001 {
             prg_bank_register: 0,
             chr_bank_0_register: 0,
             chr_bank_1_register: 0,
-            chr_write_enable,
             ignore_serial_port_writes: false,
             prg_bank_mask,
             chr_bank_mask,
@@ -195,11 +193,11 @@ impl Mapper for Mapper001 {
 
     fn write_ppu_byte(&mut self, address: u16, value: u8) {
         match address {
-            0x0000 ..= 0x0FFF => if self.chr_write_enable {
+            0x0000 ..= 0x0FFF => if self.chr_writeable {
                 let chunk_address = self.chr_bank_0_base + address as usize;
                 self.chr_chunks[self.chr_bank_0_chunk][chunk_address] = value;
             }
-            0x1000 ..= 0x1FFF => if self.chr_write_enable {
+            0x1000 ..= 0x1FFF => if self.chr_writeable {
                 let chunk_address = self.chr_bank_1_base + (address & 0x0FFF) as usize;
                 self.chr_chunks[self.chr_bank_1_chunk][chunk_address] = value;
             }

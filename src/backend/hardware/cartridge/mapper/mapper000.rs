@@ -5,7 +5,7 @@ pub struct Mapper000 {
     prg_chunk_0: PrgChunk,
     prg_chunk_1: Option<PrgChunk>,
     chr_chunk_0: ChrChunk,
-    chr_write_enable: bool,
+    chr_writeable: bool,
 }
 
 impl Mapper000 {
@@ -17,11 +17,9 @@ impl Mapper000 {
             return Err(format!("Unexpected number of CHR-ROM chunks: {}.", chr_chunks.len()));
         }
 
-        let mut chr_write_enable = false;
-        if chr_chunks.is_empty() {
-            // Add CHR-RAM, I guess?
+        let chr_writeable = chr_chunks.is_empty();
+        if chr_writeable {
             chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
-            chr_write_enable = true;
         }
 
         let mut prg_chunks = prg_chunks.into_iter();
@@ -31,7 +29,7 @@ impl Mapper000 {
             prg_chunk_0: prg_chunks.next().unwrap(),
             prg_chunk_1: prg_chunks.next(),
             chr_chunk_0: chr_chunks.next().unwrap(),
-            chr_write_enable,
+            chr_writeable,
         })
     }
 }
@@ -67,7 +65,7 @@ impl Mapper for Mapper000 {
 
     fn write_ppu_byte(&mut self, address: u16, value: u8) {
         match address {
-            0x0000 ..= 0x1FFF => if self.chr_write_enable {
+            0x0000 ..= 0x1FFF => if self.chr_writeable {
                 self.chr_chunk_0[address as usize] = value;
             }
             _ => {

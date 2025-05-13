@@ -7,8 +7,8 @@ pub struct Mapper003 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
+    chr_writeable: bool,
     prg_ram: Box<[u8; PRG_RAM_SIZE]>,
-    chr_write_enable: bool,
     prg_chunk_mask: usize,
     chr_chunk_mask: usize,
     chr_bank_chunk: usize,
@@ -19,11 +19,10 @@ impl Mapper003 {
         if prg_chunks.is_empty() {
             return Err("Expected at least one PRG-ROM chunk.".to_string());
         }
-        let mut chr_write_enable = false;
-        if chr_chunks.is_empty() {
-            // Add CHR-RAM, I guess?
+
+        let chr_writeable = chr_chunks.is_empty();
+        if chr_writeable {
             chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
-            chr_write_enable = true;
         }
 
         let mut prg_chunk_mask = 0b1;
@@ -39,8 +38,8 @@ impl Mapper003 {
             nametables: BuiltinNametables::new(header.nametable_arrangement),
             prg_chunks,
             chr_chunks,
+            chr_writeable,
             prg_ram: Box::new([0; PRG_RAM_SIZE]),
-            chr_write_enable,
             prg_chunk_mask,
             chr_chunk_mask,
             chr_bank_chunk: 0,
@@ -89,7 +88,7 @@ impl Mapper for Mapper003 {
 
     fn write_ppu_byte(&mut self, address: u16, value: u8) {
         match address {
-            0x0000 ..= 0x1FFF => if self.chr_write_enable {
+            0x0000 ..= 0x1FFF => if self.chr_writeable {
                 self.chr_chunks[self.chr_bank_chunk][address as usize] = value;
             }
             _ => {
