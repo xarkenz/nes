@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use cpal::traits::HostTrait;
 use minifb::{Key, Scale, Window, WindowOptions};
+use rand::RngCore;
 use nes_backend::hardware::*;
 use nes_backend::util::*;
 use nes_backend::movie::Movie;
@@ -593,8 +594,12 @@ pub fn main() {
             let mut is_first_frame = true;
             let mut is_playing_movie = false;
             let mut frame_timer = FrameTimer::start(target_fps as f64);
+            let mut rng = rand::rng();
+            let mut corruptions = Vec::new();
 
             while window.is_open() {
+                let keys = window.get_keys();
+
                 if log_fps && !is_first_frame {
                     let end_time = std::time::Instant::now();
                     frame_rates.push(1.0 / end_time.duration_since(start_time).as_secs_f32());
@@ -618,7 +623,7 @@ pub fn main() {
                         is_playing_movie = false;
                     }
                     machine.joypads.player_1.fill(false);
-                    for key in window.get_keys() {
+                    for key in &keys {
                         match key {
                             Key::K => machine.joypads.player_1[joypad::BUTTON_A] = true,
                             Key::J => machine.joypads.player_1[joypad::BUTTON_B] = true,
@@ -630,6 +635,27 @@ pub fn main() {
                             Key::D => machine.joypads.player_1[joypad::BUTTON_RIGHT] = true,
                             _ => {}
                         }
+                    }
+                }
+
+                for key in &keys {
+                    match key {
+                        _ => {}
+                    }
+                }
+
+                if window.is_key_pressed(Key::LeftBracket, minifb::KeyRepeat::Yes) {
+                    let address = rng.next_u32() as u16 & 0x07FF;
+                    let value = rng.next_u32() as u8;
+                    let old_value = machine.read_byte(address);
+                    machine.write_byte(address, value);
+                    println!("Corrupted ${address:04X} from ${old_value:02X} to ${value:02X}.");
+                    corruptions.push((address, old_value));
+                }
+                else if window.is_key_pressed(Key::RightBracket, minifb::KeyRepeat::Yes) {
+                    if let Some((address, old_value)) = corruptions.pop() {
+                        machine.write_byte(address, old_value);
+                        println!("Uncorrupted ${address:04X} back to ${old_value:02X}.");
                     }
                 }
 
