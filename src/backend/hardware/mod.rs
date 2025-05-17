@@ -6,6 +6,7 @@ use ppu::*;
 use apu::*;
 use cartridge::*;
 use joypad::*;
+use crate::state::{StateComponent, StateTable, StateValue, StateValueMap};
 
 pub mod cpu;
 pub mod ppu;
@@ -363,5 +364,29 @@ impl Machine {
                 break instruction;
             }
         }
+    }
+}
+
+impl StateComponent for Machine {
+    fn pull_state(&self) -> StateValue {
+        let mut table = StateTable::new();
+        table.insert("cpu".into(), self.cpu.pull_state());
+        table.insert("ppu".into(), self.ppu.pull_state());
+        table.insert("internal_ram".into(), StateValue::LargeBuffer(self.internal_ram.to_vec()));
+        StateValue::Table(table)
+    }
+
+    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
+        let StateValue::Table(table) = state else {
+            return Err("NES console state must be a valid table".to_string());
+        };
+        if let Some(state) = table.get("cpu") {
+            self.cpu.push_state(state)?;
+        }
+        if let Some(state) = table.get("ppu") {
+            self.ppu.push_state(state)?;
+        }
+        self.internal_ram.copy_from_slice(table.get_large_buffer("internal_ram")?);
+        Ok(())
     }
 }

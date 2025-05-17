@@ -1,5 +1,6 @@
 use crate::hardware::timing::DelayedFlag;
 use crate::hardware::cartridge::Cartridge;
+use crate::state::{StateComponent, StateTable, StateValue, StateValueMap};
 use color::*;
 
 pub mod color;
@@ -49,24 +50,24 @@ pub struct PictureProcessingUnit {
     color_mask: u16,
     // PPU_STATUS
     pub disable_vblank_conflict: bool,
-    vblank_flag: bool,
-    next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
-    sprite_0_hit: bool,
+    pub vblank_flag: bool,
+    pub next_vblank_flag: bool, // For the purposes of emulating hardware multiplexing
+    pub sprite_0_hit: bool,
     sprite_0_hit_timer: u8,
-    sprite_overflow: bool,
+    pub sprite_overflow: bool,
     // PPU_OAM_ADDRESS
-    oam_address: u8,
+    pub oam_address: u8,
     // PPU_SCROLL
-    fine_scroll_x: u8,
-    origin_vram_address: u16,
+    pub fine_scroll_x: u8,
+    pub origin_vram_address: u16,
     // PPU_VRAM_ADDRESS
     pub vram_address: u16,
     // PPU_VRAM_DATA
-    vram_read_buffer: u8,
+    pub vram_read_buffer: u8,
     // Internal
     pub resetting: bool,
-    odd_frame: bool,
-    write_latch: bool,
+    pub odd_frame: bool,
+    pub write_latch: bool,
     pub scanline: u16,
     pub dot: u16,
     pub in_vblank: bool,
@@ -788,5 +789,66 @@ impl PictureProcessingUnit {
             | (self.sprite_overflow as u8) << 5;
         println!("             VSO-----");
         println!("    Status: %{:08b}", status);
+    }
+}
+
+impl StateComponent for PictureProcessingUnit {
+    fn pull_state(&self) -> StateValue {
+        StateValue::Table(StateTable::from([
+            ("control".into(), StateValue::Integer(self.debug_ppu_control as i64)),
+            ("mask".into(), StateValue::Integer(self.debug_ppu_mask as i64)),
+            ("disable_vblank_conflict".into(), StateValue::Boolean(self.disable_vblank_conflict)),
+            ("vblank_flag".into(), StateValue::Boolean(self.vblank_flag)),
+            ("next_vblank_flag".into(), StateValue::Boolean(self.next_vblank_flag)),
+            ("sprite_0_hit".into(), StateValue::Boolean(self.sprite_0_hit)),
+            ("sprite_overflow".into(), StateValue::Boolean(self.sprite_overflow)),
+            ("oam_address".into(), StateValue::Integer(self.oam_address as i64)),
+            ("fine_scroll_x".into(), StateValue::Integer(self.fine_scroll_x as i64)),
+            ("origin_vram_address".into(), StateValue::Integer(self.origin_vram_address as i64)),
+            ("vram_address".into(), StateValue::Integer(self.vram_address as i64)),
+            ("vram_read_buffer".into(), StateValue::Integer(self.vram_read_buffer as i64)),
+            ("resetting".into(), StateValue::Boolean(self.resetting)),
+            ("odd_frame".into(), StateValue::Boolean(self.odd_frame)),
+            ("write_latch".into(), StateValue::Boolean(self.write_latch)),
+            ("scanline".into(), StateValue::Integer(self.scanline as i64)),
+            ("dot".into(), StateValue::Integer(self.dot as i64)),
+            ("in_vblank".into(), StateValue::Boolean(self.in_vblank)),
+            ("palette_ram".into(), StateValue::LargeBuffer(self.palette_ram.to_vec())),
+            ("primary_oam".into(), StateValue::LargeBuffer(self.primary_oam.to_vec())),
+            ("color_converter".into(), self.color_converter.pull_state()),
+        ]))
+    }
+
+    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
+        let StateValue::Table(table) = state else {
+            return Err("PPU state must be a valid table".to_string());
+        };
+        self.resetting = false;
+        self.write_control(table.get_integer("control")? as u8);
+        self.write_mask(table.get_integer("mask")? as u8);
+        self.render_background_flag.reset(self.render_background_flag.get_current());
+        self.render_sprites_flag.reset(self.render_sprites_flag.get_current());
+        self.disable_vblank_conflict = table.get_boolean("disable_vblank_conflict")?;
+        self.vblank_flag = table.get_boolean("vblank_flag")?;
+        self.next_vblank_flag = table.get_boolean("next_vblank_flag")?;
+        self.sprite_0_hit = table.get_boolean("sprite_0_hit")?;
+        self.sprite_overflow = table.get_boolean("sprite_overflow")?;
+        self.oam_address = table.get_integer("oam_address")? as u8;
+        self.fine_scroll_x = table.get_integer("fine_scroll_x")? as u8 & 0b111;
+        self.origin_vram_address = table.get_integer("origin_vram_address")? as u16 & 0x7FFF;
+        self.vram_address = table.get_integer("vram_address")? as u16 & 0x7FFF;
+        self.vram_read_buffer = table.get_integer("vram_read_buffer")? as u8;
+        self.resetting = table.get_boolean("resetting")?;
+        self.odd_frame = table.get_boolean("odd_frame")?;
+        self.write_latch = table.get_boolean("write_latch")?;
+        self.scanline = table.get_integer("scanline")?.min(PRE_RENDER_SCANLINE as i64) as u16;
+        self.dot = table.get_integer("dot")?.min(LAST_DOT as i64) as u16;
+        self.in_vblank = table.get_boolean("in_vblank")?;
+        self.palette_ram.copy_from_slice(table.get_large_buffer("palette_ram")?);
+        self.primary_oam.copy_from_slice(table.get_large_buffer("primary_oam")?);
+        if let Some(state) = table.get("color_converter") {
+            self.color_converter.push_state(state)?;
+        }
+        Ok(())
     }
 }

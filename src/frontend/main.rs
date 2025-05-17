@@ -10,6 +10,7 @@ use nes_backend::util::*;
 use nes_backend::movie::Movie;
 use audio::*;
 use display::*;
+use nes_backend::state::{StateArchive, StateComponent};
 
 pub mod audio;
 pub mod display;
@@ -37,6 +38,7 @@ pub fn main() {
     let mut log_sound = false;
     let mut log_fps = false;
     let mut movie = None;
+    let mut state_archive = None;
     let color_options = ppu::color::ColorOptions::default();
 
     machine.ppu.color_converter.generate_palette(color_options.clone());
@@ -124,7 +126,7 @@ pub fn main() {
                 };
 
                 let loaded_movie = match Movie::parse_bk2(&mut file) {
-                    Ok(file) => file,
+                    Ok(movie) => movie,
                     Err(error) => {
                         eprintln!("Error: Failed to parse file: {error}");
                         continue;
@@ -150,6 +152,75 @@ pub fn main() {
 
             movie.frame_offset = frame;
             println!("Seeked movie to frame offset {frame}.");
+        }
+        else if command.eq_ignore_ascii_case("LoadState") {
+            if argument.is_empty() {
+                state_archive = None;
+                println!("Save state discarded.");
+            }
+            else {
+                let file = match std::fs::File::open(argument) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        eprintln!("Error: Failed to open file: {error}");
+                        continue;
+                    }
+                };
+
+                let loaded_state = match StateArchive::load(file) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        eprintln!("Error: Failed to parse file: {error}");
+                        continue;
+                    }
+                };
+
+                state_archive = Some(loaded_state);
+                println!("Successfully loaded stored state from file.");
+            }
+        }
+        else if command.eq_ignore_ascii_case("SaveState") {
+            let Some(state_archive) = &state_archive else {
+                eprintln!("Error: No stored state to save.");
+                continue;
+            };
+            if argument.is_empty() {
+                eprintln!("Error: Expected a file path to save to.");
+                continue;
+            }
+
+            let file = match std::fs::File::create(argument) {
+                Ok(file) => file,
+                Err(error) => {
+                    eprintln!("Error: Failed to create file: {error}");
+                    continue;
+                }
+            };
+
+            if let Err(error) = state_archive.save(file) {
+                eprintln!("Error: Failed to write to file: {error}");
+                let _ = std::fs::remove_file(argument);
+                continue;
+            }
+
+            println!("Successfully saved stored state to file.");
+        }
+        else if command.eq_ignore_ascii_case("PushState") {
+            let Some(state_archive) = &state_archive else {
+                eprintln!("Error: No stored state to push.");
+                continue;
+            };
+
+            if let Err(error) = machine.push_state(state_archive.state()) {
+                eprintln!("Error: Failed to push stored state: {error}");
+                continue;
+            }
+
+            println!("Successfully pushed stored state into current state.");
+        }
+        else if command.eq_ignore_ascii_case("PullState") {
+            state_archive = Some(StateArchive::new(machine.pull_state()));
+            println!("Successfully pulled current state into stored state.");
         }
         else if command.eq_ignore_ascii_case("Reset") {
             machine.reset();
@@ -586,8 +657,8 @@ pub fn main() {
             };
             let mut window = Window::new(&window_name, ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT, window_options).unwrap();
 
-            window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
             window.set_target_fps(0);
+            window.update_with_buffer(machine.ppu.screen_buffer.as_slice(), ppu::SCREEN_WIDTH, ppu::SCREEN_HEIGHT).unwrap();
 
             let mut start_time = std::time::Instant::now();
             let mut frame_rates = Vec::new();
@@ -619,7 +690,7 @@ pub fn main() {
                 }
                 else {
                     if is_playing_movie {
-                        println!("Info: Movie finished, user controls restored.");
+                        println!("Movie finished, user controls restored.");
                         is_playing_movie = false;
                     }
                     machine.joypads.player_1.fill(false);
@@ -628,7 +699,7 @@ pub fn main() {
                             Key::K => machine.joypads.player_1[joypad::BUTTON_A] = true,
                             Key::J => machine.joypads.player_1[joypad::BUTTON_B] = true,
                             Key::Tab => machine.joypads.player_1[joypad::BUTTON_SELECT] = true,
-                            Key::Space => machine.joypads.player_1[joypad::BUTTON_START] = true,
+                            Key::Enter => machine.joypads.player_1[joypad::BUTTON_START] = true,
                             Key::W => machine.joypads.player_1[joypad::BUTTON_UP] = true,
                             Key::S => machine.joypads.player_1[joypad::BUTTON_DOWN] = true,
                             Key::A => machine.joypads.player_1[joypad::BUTTON_LEFT] = true,
@@ -638,9 +709,21 @@ pub fn main() {
                     }
                 }
 
-                for key in &keys {
-                    match key {
-                        _ => {}
+                if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
+                    if window.is_key_down(Key::LeftShift) {
+                        state_archive = Some(StateArchive::new(machine.pull_state()));
+                        println!("Pulled current state into stored state.");
+                    }
+                    else if let Some(state_archive) = &state_archive {
+                        if let Err(error) = machine.push_state(state_archive.state()) {
+                            eprintln!("Error: Failed to push stored state: {error}");
+                        }
+                        else {
+                            println!("Pushed stored state into current state.");
+                        }
+                    }
+                    else {
+                        println!("No stored state to push.");
                     }
                 }
 

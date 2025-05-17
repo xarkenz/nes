@@ -1,4 +1,5 @@
 use instruction::Instruction;
+use crate::state::{StateComponent, StateTable, StateValue, StateValueMap};
 
 pub mod instruction;
 
@@ -133,5 +134,57 @@ impl CentralProcessingUnit {
         println!("    Y: ${:02X}", self.register_y);
         println!("             NV--DIZC");
         println!("    Status: %{:08b}", self.get_status_byte(false));
+    }
+}
+
+impl StateComponent for CentralProcessingUnit {
+    fn pull_state(&self) -> StateValue {
+        let mut table = StateTable::new();
+        table.insert("halted".into(), StateValue::Boolean(self.is_halted));
+        table.insert("program_counter".into(), StateValue::Integer(self.program_counter as i64));
+        table.insert("accumulator".into(), StateValue::Integer(self.accumulator as i64));
+        table.insert("register_x".into(), StateValue::Integer(self.register_x as i64));
+        table.insert("register_y".into(), StateValue::Integer(self.register_y as i64));
+        table.insert("stack_pointer".into(), StateValue::Integer(self.stack_pointer as i64));
+        table.insert("status".into(), StateValue::Integer(self.get_status_byte(false) as i64));
+        table.insert("oam_dma_address".into(), StateValue::Integer(self.oam_dma_address as i64));
+        table.insert("oam_dma_active".into(), StateValue::Boolean(self.oam_dma_active));
+        if let Some(oam_dma_fetch) = self.oam_dma_fetch {
+            table.insert("oam_dma_fetch".into(), StateValue::Integer(oam_dma_fetch as i64));
+        }
+        table.insert("dmc_dma_active".into(), StateValue::Boolean(self.dmc_dma_active));
+        table.insert("cycle_tick_offset".into(), StateValue::Integer(self.cycle_tick_offset as i64));
+        table.insert("put_cycle".into(), StateValue::Boolean(self.is_put_cycle));
+        table.insert("cycles_available".into(), StateValue::Integer(self.cycles_available as i64));
+        table.insert("delay_cycles".into(), StateValue::Integer(self.delay_cycles as i64));
+        if let Some(instruction) = self.pending_instruction {
+            table.insert("pending_instruction".into(), StateValue::Integer(instruction.opcode() as i64));
+        }
+        StateValue::Table(table)
+    }
+
+    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
+        let StateValue::Table(table) = state else {
+            return Err("CPU state must be a valid table".to_string());
+        };
+        self.is_halted = table.get_boolean("halted")?;
+        self.program_counter = table.get_integer("program_counter")? as u16;
+        self.accumulator = table.get_integer("accumulator")? as u8;
+        self.register_x = table.get_integer("register_x")? as u8;
+        self.register_y = table.get_integer("register_y")? as u8;
+        self.stack_pointer = table.get_integer("stack_pointer")? as u8;
+        self.set_status_byte(table.get_integer("status")? as u8);
+        self.oam_dma_address = table.get_integer("oam_dma_address")? as u16;
+        self.oam_dma_active = table.get_boolean("oam_dma_active")?;
+        self.oam_dma_fetch = table.get_integer("oam_dma_fetch").ok()
+            .map(|value| value as u8);
+        self.dmc_dma_active = table.get_boolean("dmc_dma_active")?;
+        self.cycle_tick_offset = table.get_integer("cycle_tick_offset")? as u16 % TICKS_PER_CPU_CYCLE;
+        self.is_put_cycle = table.get_boolean("put_cycle")?;
+        self.cycles_available = table.get_integer("cycles_available")? as u16;
+        self.delay_cycles = table.get_integer("delay_cycles")? as u16;
+        self.pending_instruction = table.get_integer("pending_instruction").ok()
+            .map(|value| Instruction::decode(value as u8));
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
 use std::io::Read;
 use crate::hardware::ppu::PPU_COLOR_COUNT;
+use crate::state::{StateComponent, StateValue};
 
 #[derive(Clone, Debug)]
 pub struct ColorOptions {
@@ -168,5 +169,28 @@ impl ColorConverter {
             // At long last, we have our actual palette entry
             *entry = 0xFF000000 | r << 16 | g << 8 | b;
         }
+    }
+}
+
+impl StateComponent for ColorConverter {
+    fn pull_state(&self) -> StateValue {
+        StateValue::LargeBuffer(self.table
+            .iter()
+            .flat_map(|&entry| [
+                (entry >> 16 & 0xFF) as u8,
+                (entry >> 8 & 0xFF) as u8,
+                (entry & 0xFF) as u8,
+            ])
+            .collect())
+    }
+
+    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
+        let StateValue::LargeBuffer(buffer) = state else {
+            return Err("PPU color converter state must be a large buffer reference".to_string());
+        };
+        for (entry, rgb) in self.table.iter_mut().zip(buffer.chunks_exact(3)) {
+            *entry = 0xFF000000 | (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
+        }
+        Ok(())
     }
 }
