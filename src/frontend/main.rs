@@ -5,12 +5,13 @@ use cpal::traits::HostTrait;
 use dasp::Signal;
 use minifb::{Key, Scale, Window, WindowOptions};
 use rand::Rng;
+use serde::Serialize;
 use nes_backend::hardware::*;
 use nes_backend::util::*;
 use nes_backend::movie::Movie;
 use audio::*;
 use display::*;
-use nes_backend::state::{StateArchive, StateComponent};
+use nes_backend::state::PullState;
 
 pub mod audio;
 pub mod display;
@@ -38,7 +39,7 @@ pub fn main() {
     let mut log_sound = false;
     let mut log_fps = false;
     let mut movie = None;
-    let mut state_archive = None;
+    let mut stored_state = None;
     let color_options = ppu::color::ColorOptions::default();
 
     machine.ppu.color_converter.generate_palette(color_options.clone());
@@ -155,7 +156,7 @@ pub fn main() {
         }
         else if command.eq_ignore_ascii_case("LoadState") {
             if argument.is_empty() {
-                state_archive = None;
+                stored_state = None;
                 println!("Save state discarded.");
             }
             else {
@@ -167,7 +168,7 @@ pub fn main() {
                     }
                 };
 
-                let loaded_state = match StateArchive::load(file) {
+                let loaded_state: Machine = match rmp_serde::from_read(file) {
                     Ok(state) => state,
                     Err(error) => {
                         eprintln!("Error: Failed to parse file: {error}");
@@ -175,12 +176,12 @@ pub fn main() {
                     }
                 };
 
-                state_archive = Some(loaded_state);
+                stored_state = Some(loaded_state);
                 println!("Successfully loaded stored state from file.");
             }
         }
         else if command.eq_ignore_ascii_case("SaveState") {
-            let Some(state_archive) = &state_archive else {
+            let Some(state) = &stored_state else {
                 eprintln!("Error: No stored state to save.");
                 continue;
             };
@@ -189,7 +190,7 @@ pub fn main() {
                 continue;
             }
 
-            let file = match std::fs::File::create(argument) {
+            let mut file = match std::fs::File::create(argument) {
                 Ok(file) => file,
                 Err(error) => {
                     eprintln!("Error: Failed to create file: {error}");
@@ -197,7 +198,13 @@ pub fn main() {
                 }
             };
 
-            if let Err(error) = state_archive.save(file) {
+            let mut buffer = Vec::new();
+            if let Err(error) = state.serialize(&mut rmp_serde::Serializer::new(&mut buffer)) {
+                eprintln!("Error: Failed to serialize stored state: {error}");
+                let _ = std::fs::remove_file(argument);
+                continue;
+            }
+            if let Err(error) = file.write_all(&buffer) {
                 eprintln!("Error: Failed to write to file: {error}");
                 let _ = std::fs::remove_file(argument);
                 continue;
@@ -206,20 +213,17 @@ pub fn main() {
             println!("Successfully saved stored state to file.");
         }
         else if command.eq_ignore_ascii_case("PushState") {
-            let Some(state_archive) = &state_archive else {
+            let Some(state) = &stored_state else {
                 eprintln!("Error: No stored state to push.");
                 continue;
             };
 
-            if let Err(error) = machine.push_state(state_archive.state()) {
-                eprintln!("Error: Failed to push stored state: {error}");
-                continue;
-            }
+            machine.pull_state_from(state);
 
             println!("Successfully pushed stored state into current state.");
         }
         else if command.eq_ignore_ascii_case("PullState") {
-            state_archive = Some(StateArchive::new(machine.pull_state()));
+            stored_state.get_or_insert_with(Machine::new).pull_state_from(&machine);
             println!("Successfully pulled current state into stored state.");
         }
         else if command.eq_ignore_ascii_case("Reset") {
@@ -711,16 +715,12 @@ pub fn main() {
 
                 if window.is_key_pressed(Key::R, minifb::KeyRepeat::No) {
                     if window.is_key_down(Key::LeftShift) {
-                        state_archive = Some(StateArchive::new(machine.pull_state()));
+                        stored_state.get_or_insert_with(Machine::new).pull_state_from(&machine);
                         println!("Pulled current state into stored state.");
                     }
-                    else if let Some(state_archive) = &state_archive {
-                        if let Err(error) = machine.push_state(state_archive.state()) {
-                            eprintln!("Error: Failed to push stored state: {error}");
-                        }
-                        else {
-                            println!("Pushed stored state into current state.");
-                        }
+                    else if let Some(state) = &stored_state {
+                        machine.pull_state_from(state);
+                        println!("Pushed stored state into current state.");
                     }
                     else {
                         println!("No stored state to push.");

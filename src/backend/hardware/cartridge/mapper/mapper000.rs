@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
 use super::*;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Mapper000 {
     nametables: BuiltinNametables,
     prg_chunk_0: PrgChunk,
@@ -19,7 +21,7 @@ impl Mapper000 {
 
         let chr_writeable = chr_chunks.is_empty();
         if chr_writeable {
-            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
+            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE].into()));
         }
 
         let mut prg_chunks = prg_chunks.into_iter();
@@ -34,6 +36,7 @@ impl Mapper000 {
     }
 }
 
+#[typetag::serde]
 impl Mapper for Mapper000 {
     fn name(&self) -> &'static str {
         "Mapper 000 (NROM)"

@@ -1,12 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::Write;
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteArray;
 use cpu::instruction::*;
 use cpu::*;
 use ppu::*;
 use apu::*;
 use cartridge::*;
 use joypad::*;
-use crate::state::{StateComponent, StateTable, StateValue, StateValueMap};
+use crate::state::PullState;
 
 pub mod cpu;
 pub mod ppu;
@@ -21,15 +23,19 @@ pub const STACK_PAGE: u16 = 0x0100;
 pub const NMI_VECTOR: u16 = 0xFFFA;
 pub const RESET_VECTOR: u16 = 0xFFFC;
 pub const IRQ_VECTOR: u16 = 0xFFFE;
+const INTERNAL_RAM_SIZE: usize = 0x0800;
 
+#[derive(Serialize, Deserialize)]
 pub struct Machine {
     pub cpu: CentralProcessingUnit,
     pub ppu: PictureProcessingUnit,
     pub apu: AudioProcessingUnit,
     pub cartridge: Option<Cartridge>,
     pub joypads: Joypads,
-    pub internal_ram: Box<[u8; 0x0800]>,
+    pub internal_ram: Box<ByteArray<INTERNAL_RAM_SIZE>>,
+    #[serde(skip)]
     pub debug_printing: bool,
+    #[serde(skip)]
     debug_disassembly: Option<BTreeMap<u16, (u16, String)>>,
 }
 
@@ -41,7 +47,7 @@ impl Machine {
             apu: AudioProcessingUnit::new(),
             cartridge: None,
             joypads: Joypads::new(),
-            internal_ram: Box::new([0; 0x0800]),
+            internal_ram: Box::new([0; INTERNAL_RAM_SIZE].into()),
             debug_printing: false,
             debug_disassembly: None,
         }
@@ -367,26 +373,14 @@ impl Machine {
     }
 }
 
-impl StateComponent for Machine {
-    fn pull_state(&self) -> StateValue {
-        let mut table = StateTable::new();
-        table.insert("cpu".into(), self.cpu.pull_state());
-        table.insert("ppu".into(), self.ppu.pull_state());
-        table.insert("internal_ram".into(), StateValue::LargeBuffer(self.internal_ram.to_vec()));
-        StateValue::Table(table)
-    }
-
-    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
-        let StateValue::Table(table) = state else {
-            return Err("NES console state must be a valid table".to_string());
-        };
-        if let Some(state) = table.get("cpu") {
-            self.cpu.push_state(state)?;
-        }
-        if let Some(state) = table.get("ppu") {
-            self.ppu.push_state(state)?;
-        }
-        self.internal_ram.copy_from_slice(table.get_large_buffer("internal_ram")?);
-        Ok(())
+impl PullState for Machine {
+    fn pull_state_from(&mut self, source: &Self) {
+        self.cpu.pull_state_from(&source.cpu);
+        self.ppu.pull_state_from(&source.ppu);
+        self.apu.pull_state_from(&source.apu);
+        self.cartridge.pull_state_from(&source.cartridge);
+        self.joypads.pull_state_from(&source.joypads);
+        self.internal_ram.pull_state_from(&source.internal_ram);
+        // Debug state is ignored
     }
 }

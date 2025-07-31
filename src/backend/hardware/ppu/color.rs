@@ -1,6 +1,7 @@
 use std::io::Read;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_bytes::ByteBuf;
 use crate::hardware::ppu::PPU_COLOR_COUNT;
-use crate::state::{StateComponent, StateValue};
 
 #[derive(Clone, Debug)]
 pub struct ColorOptions {
@@ -27,6 +28,7 @@ impl Default for ColorOptions {
     }
 }
 
+#[derive(Clone)]
 pub struct ColorConverter {
     table: Box<[u32; PPU_COLOR_COUNT * 8]>,
 }
@@ -61,6 +63,14 @@ impl ColorConverter {
         }
 
         Ok(())
+    }
+    
+    pub fn to_pal(&self) -> Vec<u8> {
+        self.table
+            .iter()
+            .copied()
+            .flat_map(|entry| entry.to_be_bytes().into_iter().skip(1))
+            .collect()
     }
 
     // Based on https://github.com/jslepicka/nemulator/blob/d1e87d556a2592a7b7dcf5a316106944ee33b2d8/nes/ppu.cpp#L42
@@ -172,25 +182,22 @@ impl ColorConverter {
     }
 }
 
-impl StateComponent for ColorConverter {
-    fn pull_state(&self) -> StateValue {
-        StateValue::LargeBuffer(self.table
-            .iter()
-            .flat_map(|&entry| [
-                (entry >> 16 & 0xFF) as u8,
-                (entry >> 8 & 0xFF) as u8,
-                (entry & 0xFF) as u8,
-            ])
-            .collect())
+impl Default for ColorConverter {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
-        let StateValue::LargeBuffer(buffer) = state else {
-            return Err("PPU color converter state must be a large buffer reference".to_string());
-        };
-        for (entry, rgb) in self.table.iter_mut().zip(buffer.chunks_exact(3)) {
-            *entry = 0xFF000000 | (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
-        }
-        Ok(())
+impl Serialize for ColorConverter {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ByteBuf::from(self.to_pal()).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ColorConverter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut converter = Self::new();
+        converter.parse_pal(std::io::Cursor::new(ByteBuf::deserialize(deserializer)?)).unwrap();
+        Ok(converter)
     }
 }

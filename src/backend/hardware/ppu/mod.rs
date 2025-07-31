@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteArray;
 use crate::hardware::timing::DelayedFlag;
 use crate::hardware::cartridge::Cartridge;
-use crate::state::{StateComponent, StateTable, StateValue, StateValueMap};
 use color::*;
 
 pub mod color;
@@ -27,11 +28,16 @@ const VRAM_HORIZONTAL_BITS: u16 = 0b000_01_00000_11111;
 const VRAM_VERTICAL_BITS: u16 = 0b111_10_11111_00000;
 const NAMETABLES_START_ADDRESS: u16 = 0x2000;
 const ATTRIBUTE_OFFSET: u16 = 0x03C0;
-const SECONDARY_OAM_SIZE: u8 = 32;
+const SECONDARY_OAM_SIZE: usize = 32;
 const OAM_BYTE_2_MASK: u8 = 0b11100011;
 const NMI_TRIGGER_DELAY: u16 = 2; // Just needs to delay NMI by one instruction I think
 const RENDER_ENABLE_DELAY: u16 = 3; // Supposedly 3 or 4, but not very precise
 
+fn default_screen_buffer() -> Box<[u32; SCREEN_WIDTH * SCREEN_HEIGHT]> {
+    Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT])
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PictureProcessingUnit {
     // PPU_CONTROL
     debug_ppu_control: u8,
@@ -72,15 +78,16 @@ pub struct PictureProcessingUnit {
     pub dot: u16,
     pub in_vblank: bool,
     vblank_nmi_triggered: DelayedFlag<NMI_TRIGGER_DELAY>, // true if actively pulling /NMI low
-    sliver_shifter: [u8; 16], // epic variable name
-    pub palette_ram: [u8; 32],
-    pub primary_oam: Box<[u8; 0x100]>,
+    sliver_shifter: ByteArray<16>, // epic variable name
+    pub palette_ram: ByteArray<32>,
+    pub primary_oam: Box<ByteArray<0x100>>,
     secondary_oam_address: u8,
-    secondary_oam: [u8; SECONDARY_OAM_SIZE as usize],
+    secondary_oam: ByteArray<SECONDARY_OAM_SIZE>,
     sprite_evaluation_finished: bool,
     sprite_0_in_range: bool,
-    sprite_output_buffer: Box<[u8; SCREEN_WIDTH]>,
+    sprite_output_buffer: Box<ByteArray<SCREEN_WIDTH>>,
     pub color_converter: ColorConverter,
+    #[serde(skip, default = "default_screen_buffer")]
     pub screen_buffer: Box<[u32; SCREEN_WIDTH * SCREEN_HEIGHT]>,
     pub debug_cycle_counter: u64,
 }
@@ -119,16 +126,16 @@ impl PictureProcessingUnit {
             dot: 0,
             in_vblank: false,
             vblank_nmi_triggered: DelayedFlag::new(false),
-            sliver_shifter: [0; 16],
-            palette_ram: [0; 32],
-            primary_oam: Box::new([0; 0x100]),
+            sliver_shifter: [0; 16].into(),
+            palette_ram: [0; 32].into(),
+            primary_oam: Box::new([0; 0x100].into()),
             secondary_oam_address: 0,
-            secondary_oam: [0; SECONDARY_OAM_SIZE as usize],
+            secondary_oam: [0; SECONDARY_OAM_SIZE].into(),
             sprite_evaluation_finished: false,
             sprite_0_in_range: false,
-            sprite_output_buffer: Box::new([0; SCREEN_WIDTH]),
+            sprite_output_buffer: Box::new([0; SCREEN_WIDTH].into()),
             color_converter: ColorConverter::new(),
-            screen_buffer: Box::new([0; SCREEN_WIDTH * SCREEN_HEIGHT]),
+            screen_buffer: default_screen_buffer(),
             debug_cycle_counter: 0,
         }
     }
@@ -478,7 +485,7 @@ impl PictureProcessingUnit {
                         let end_y = start_y + if self.tall_sprites { 16 } else { 8 };
                         if self.scanline >= start_y && self.scanline < end_y {
                             // Sprite is in range
-                            if self.secondary_oam_address == SECONDARY_OAM_SIZE {
+                            if self.secondary_oam_address == SECONDARY_OAM_SIZE as u8 {
                                 // Theoretically found a 9th sprite which triggers overflow
                                 // (though, with the hardware bug, probably wrong)
                                 self.sprite_overflow = true;
@@ -495,7 +502,7 @@ impl PictureProcessingUnit {
                         }
                         else {
                             // Sprite is not in range
-                            if self.secondary_oam_address == SECONDARY_OAM_SIZE {
+                            if self.secondary_oam_address == SECONDARY_OAM_SIZE as u8 {
                                 // Perform the double-increment hardware bug (yippee!)
                                 let increment_amount = if self.oam_address & 0b11 == 0b11 { 1 } else { 5 };
                                 (self.oam_address, self.sprite_evaluation_finished) = self.oam_address.overflowing_add(increment_amount);
@@ -505,7 +512,7 @@ impl PictureProcessingUnit {
                             }
                         }
                     }
-                    else if self.secondary_oam_address < SECONDARY_OAM_SIZE {
+                    else if self.secondary_oam_address < SECONDARY_OAM_SIZE as u8 {
                         // Transfer a byte from primary OAM to secondary OAM
                         let oam_byte = self.primary_oam[self.oam_address as usize];
                         self.secondary_oam[self.secondary_oam_address as usize] = oam_byte;
@@ -792,63 +799,8 @@ impl PictureProcessingUnit {
     }
 }
 
-impl StateComponent for PictureProcessingUnit {
-    fn pull_state(&self) -> StateValue {
-        StateValue::Table(StateTable::from([
-            ("control".into(), StateValue::Integer(self.debug_ppu_control as i64)),
-            ("mask".into(), StateValue::Integer(self.debug_ppu_mask as i64)),
-            ("disable_vblank_conflict".into(), StateValue::Boolean(self.disable_vblank_conflict)),
-            ("vblank_flag".into(), StateValue::Boolean(self.vblank_flag)),
-            ("next_vblank_flag".into(), StateValue::Boolean(self.next_vblank_flag)),
-            ("sprite_0_hit".into(), StateValue::Boolean(self.sprite_0_hit)),
-            ("sprite_overflow".into(), StateValue::Boolean(self.sprite_overflow)),
-            ("oam_address".into(), StateValue::Integer(self.oam_address as i64)),
-            ("fine_scroll_x".into(), StateValue::Integer(self.fine_scroll_x as i64)),
-            ("origin_vram_address".into(), StateValue::Integer(self.origin_vram_address as i64)),
-            ("vram_address".into(), StateValue::Integer(self.vram_address as i64)),
-            ("vram_read_buffer".into(), StateValue::Integer(self.vram_read_buffer as i64)),
-            ("resetting".into(), StateValue::Boolean(self.resetting)),
-            ("odd_frame".into(), StateValue::Boolean(self.odd_frame)),
-            ("write_latch".into(), StateValue::Boolean(self.write_latch)),
-            ("scanline".into(), StateValue::Integer(self.scanline as i64)),
-            ("dot".into(), StateValue::Integer(self.dot as i64)),
-            ("in_vblank".into(), StateValue::Boolean(self.in_vblank)),
-            ("palette_ram".into(), StateValue::LargeBuffer(self.palette_ram.to_vec())),
-            ("primary_oam".into(), StateValue::LargeBuffer(self.primary_oam.to_vec())),
-            ("color_converter".into(), self.color_converter.pull_state()),
-        ]))
-    }
-
-    fn push_state(&mut self, state: &StateValue) -> Result<(), String> {
-        let StateValue::Table(table) = state else {
-            return Err("PPU state must be a valid table".to_string());
-        };
-        self.resetting = false;
-        self.write_control(table.get_integer("control")? as u8);
-        self.write_mask(table.get_integer("mask")? as u8);
-        self.render_background_flag.reset(self.render_background_flag.get_current());
-        self.render_sprites_flag.reset(self.render_sprites_flag.get_current());
-        self.disable_vblank_conflict = table.get_boolean("disable_vblank_conflict")?;
-        self.vblank_flag = table.get_boolean("vblank_flag")?;
-        self.next_vblank_flag = table.get_boolean("next_vblank_flag")?;
-        self.sprite_0_hit = table.get_boolean("sprite_0_hit")?;
-        self.sprite_overflow = table.get_boolean("sprite_overflow")?;
-        self.oam_address = table.get_integer("oam_address")? as u8;
-        self.fine_scroll_x = table.get_integer("fine_scroll_x")? as u8 & 0b111;
-        self.origin_vram_address = table.get_integer("origin_vram_address")? as u16 & 0x7FFF;
-        self.vram_address = table.get_integer("vram_address")? as u16 & 0x7FFF;
-        self.vram_read_buffer = table.get_integer("vram_read_buffer")? as u8;
-        self.resetting = table.get_boolean("resetting")?;
-        self.odd_frame = table.get_boolean("odd_frame")?;
-        self.write_latch = table.get_boolean("write_latch")?;
-        self.scanline = table.get_integer("scanline")?.min(PRE_RENDER_SCANLINE as i64) as u16;
-        self.dot = table.get_integer("dot")?.min(LAST_DOT as i64) as u16;
-        self.in_vblank = table.get_boolean("in_vblank")?;
-        self.palette_ram.copy_from_slice(table.get_large_buffer("palette_ram")?);
-        self.primary_oam.copy_from_slice(table.get_large_buffer("primary_oam")?);
-        if let Some(state) = table.get("color_converter") {
-            self.color_converter.push_state(state)?;
-        }
-        Ok(())
+impl Default for PictureProcessingUnit {
+    fn default() -> Self {
+        Self::new()
     }
 }

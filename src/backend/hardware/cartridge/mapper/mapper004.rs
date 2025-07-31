@@ -2,7 +2,7 @@ use super::*;
 
 pub const PRG_RAM_SIZE: usize = 0x2000;
 
-#[derive(Copy, Clone, PartialEq, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug, Serialize, Deserialize)]
 enum IRQTrigger {
     /// IRQ is triggered if counter is 0 after decrementing/reloading.
     Level,
@@ -19,12 +19,13 @@ impl std::fmt::Display for IRQTrigger {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Mapper004 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
     chr_writeable: bool,
-    prg_ram: Box<[u8; PRG_RAM_SIZE]>,
+    prg_ram: Box<ByteArray<PRG_RAM_SIZE>>,
     bank_registers: [u8; 8],
     register_select: usize,
     prg_bank_mode_1: bool,
@@ -47,7 +48,7 @@ impl Mapper004 {
     pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
         let chr_writeable = chr_chunks.is_empty();
         if chr_writeable {
-            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
+            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE].into()));
         }
 
         let mut prg_bank_mask = 0xFF;
@@ -64,7 +65,7 @@ impl Mapper004 {
             prg_chunks,
             chr_chunks,
             chr_writeable,
-            prg_ram: Box::new([0; PRG_RAM_SIZE]),
+            prg_ram: Box::new([0; PRG_RAM_SIZE].into()),
             bank_registers: [0; 8],
             register_select: 0,
             prg_bank_mode_1: false,
@@ -164,6 +165,7 @@ impl Mapper004 {
     }
 }
 
+#[typetag::serde]
 impl Mapper for Mapper004 {
     fn name(&self) -> &'static str {
         "Mapper 004 (MMC3/MMC6)"

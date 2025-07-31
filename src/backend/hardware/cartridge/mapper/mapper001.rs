@@ -1,5 +1,6 @@
 use super::*;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Mapper001 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
@@ -29,7 +30,7 @@ impl Mapper001 {
     pub fn new(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, mut chr_chunks: Vec<ChrChunk>) -> Result<Self, String> {
         let chr_writeable = chr_chunks.is_empty();
         if chr_writeable {
-            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
+            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE].into()));
         }
 
         let mut prg_bank_mask = 0b1111;
@@ -101,6 +102,7 @@ impl Mapper001 {
     }
 }
 
+#[typetag::serde]
 impl Mapper for Mapper001 {
     fn name(&self) -> &'static str {
         "Mapper 001 (MMC1)"

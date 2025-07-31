@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
 use crate::hardware::timing::DelayedFlag;
 use channel::*;
+use crate::state::PullState;
 
 pub mod channel;
 
@@ -27,7 +29,7 @@ fn mixer_tnd_table() -> Box<[f32; 203]> {
     table
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum SequencerMode {
     FourStep,
     FiveStep,
@@ -42,6 +44,7 @@ impl std::fmt::Display for SequencerMode {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct AudioProcessingUnit {
     pulse_channel_1: PulseChannel,
     pulse_channel_2: PulseChannel,
@@ -54,10 +57,13 @@ pub struct AudioProcessingUnit {
     frame_irq_asserted: bool,
     frame_counter: u16,
     reset_frame_counter: DelayedFlag<4>,
+    #[serde(skip)]
     mixer_output: Option<Box<dyn Fn(f32)>>,
     mixer_sample_interval: u16,
     mixer_sample_timer: u16,
+    #[serde(skip, default = "mixer_pulse_table")]
     mixer_pulse_table: Box<[f32; 31]>,
+    #[serde(skip, default = "mixer_tnd_table")]
     mixer_tnd_table: Box<[f32; 203]>,
 }
 
@@ -288,5 +294,32 @@ impl AudioProcessingUnit {
         self.noise_channel.debug_print_state();
         println!("    DMC:");
         self.delta_modulation_channel.debug_print_state();
+    }
+}
+
+impl Default for AudioProcessingUnit {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PullState for AudioProcessingUnit {
+    fn pull_state_from(&mut self, source: &Self) {
+        self.pulse_channel_1.pull_state_from(&source.pulse_channel_1);
+        self.pulse_channel_2.pull_state_from(&source.pulse_channel_2);
+        self.triangle_channel.pull_state_from(&source.triangle_channel);
+        self.noise_channel.pull_state_from(&source.noise_channel);
+        self.delta_modulation_channel.pull_state_from(&source.delta_modulation_channel);
+        self.sequencer_mode.pull_state_from(&source.sequencer_mode);
+        self.second_half_cycle.pull_state_from(&source.second_half_cycle);
+        self.frame_irq_inhibited.pull_state_from(&source.frame_irq_inhibited);
+        self.frame_irq_asserted.pull_state_from(&source.frame_irq_asserted);
+        self.frame_counter.pull_state_from(&source.frame_counter);
+        self.reset_frame_counter.pull_state_from(&source.reset_frame_counter);
+        // mixer_output is ignored
+        self.mixer_sample_interval.pull_state_from(&source.mixer_sample_interval);
+        self.mixer_sample_timer.pull_state_from(&source.mixer_sample_timer);
+        self.mixer_pulse_table.pull_state_from(&source.mixer_pulse_table);
+        self.mixer_tnd_table.pull_state_from(&source.mixer_tnd_table);
     }
 }

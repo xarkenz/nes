@@ -3,12 +3,13 @@ use super::*;
 const PRG_RAM_SIZE: usize = 0x0800; // 2 KiB
 const PRG_RAM_MASK: usize = PRG_RAM_SIZE - 1;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Mapper003 {
     nametables: BuiltinNametables,
     prg_chunks: Vec<PrgChunk>,
     chr_chunks: Vec<ChrChunk>,
     chr_writeable: bool,
-    prg_ram: Box<[u8; PRG_RAM_SIZE]>,
+    prg_ram: Box<ByteArray<PRG_RAM_SIZE>>,
     prg_chunk_mask: usize,
     chr_chunk_mask: usize,
     chr_bank_chunk: usize,
@@ -22,7 +23,7 @@ impl Mapper003 {
 
         let chr_writeable = chr_chunks.is_empty();
         if chr_writeable {
-            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE]));
+            chr_chunks.push(Box::new([0; CHR_CHUNK_SIZE].into()));
         }
 
         let mut prg_chunk_mask = 0b1;
@@ -39,7 +40,7 @@ impl Mapper003 {
             prg_chunks,
             chr_chunks,
             chr_writeable,
-            prg_ram: Box::new([0; PRG_RAM_SIZE]),
+            prg_ram: Box::new([0; PRG_RAM_SIZE].into()),
             prg_chunk_mask,
             chr_chunk_mask,
             chr_bank_chunk: 0,
@@ -49,6 +50,7 @@ impl Mapper003 {
     }
 }
 
+#[typetag::serde]
 impl Mapper for Mapper003 {
     fn name(&self) -> &'static str {
         "Mapper 003 (CNROM)"

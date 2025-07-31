@@ -1,6 +1,9 @@
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteArray;
 use crate::hardware::cartridge::NESFileHeader;
 
-pub trait Mapper {
+#[typetag::serde(tag = "type")]
+pub trait Mapper: dyn_clone::DynClone {
     fn name(&self) -> &'static str;
 
     fn tick(&mut self) {
@@ -29,17 +32,19 @@ pub trait Mapper {
     fn debug_print_state(&self);
 }
 
+dyn_clone::clone_trait_object!(Mapper);
+
 pub const PRG_CHUNK_SIZE: usize = 0x4000;
 pub const PRG_CHUNK_OFFSET_MASK: usize = PRG_CHUNK_SIZE - 1;
 pub const CHR_CHUNK_SIZE: usize = 0x2000;
 pub const CHR_CHUNK_OFFSET_MASK: usize = CHR_CHUNK_SIZE - 1;
 pub const NAMETABLE_SIZE: usize = 0x0400;
 
-pub type PrgChunk = Box<[u8; PRG_CHUNK_SIZE]>;
-pub type ChrChunk = Box<[u8; CHR_CHUNK_SIZE]>;
-pub type Nametable = Box<[u8; NAMETABLE_SIZE]>;
+pub type PrgChunk = Box<ByteArray<PRG_CHUNK_SIZE>>;
+pub type ChrChunk = Box<ByteArray<CHR_CHUNK_SIZE>>;
+pub type Nametable = Box<ByteArray<NAMETABLE_SIZE>>;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum NametableArrangement {
     /// CIRAM A10 <- PPU A11
     Vertical,
@@ -70,6 +75,7 @@ impl std::fmt::Display for NametableArrangement {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct BuiltinNametables {
     pub arrangement: NametableArrangement,
     pub nametables: [Nametable; 2],
@@ -80,8 +86,8 @@ impl BuiltinNametables {
         Self {
             arrangement,
             nametables: [
-                Box::new([0; NAMETABLE_SIZE]),
-                Box::new([0; NAMETABLE_SIZE]),
+                Box::new([0; NAMETABLE_SIZE].into()),
+                Box::new([0; NAMETABLE_SIZE].into()),
             ],
         }
     }
@@ -116,6 +122,7 @@ pub fn initialize_mapper(header: &NESFileHeader, prg_chunks: Vec<PrgChunk>, chr_
         001 => boxed(mapper001::Mapper001::new(header, prg_chunks, chr_chunks)),
         003 => boxed(mapper003::Mapper003::new(header, prg_chunks, chr_chunks)),
         004 => boxed(mapper004::Mapper004::new(header, prg_chunks, chr_chunks)),
+        007 => boxed(mapper007::Mapper007::new(header, prg_chunks, chr_chunks)),
         number => Err(format!("Unsupported mapper number: {number:03}."))
     }
 }
@@ -124,3 +131,4 @@ mod mapper000;
 mod mapper001;
 mod mapper003;
 mod mapper004;
+mod mapper007;

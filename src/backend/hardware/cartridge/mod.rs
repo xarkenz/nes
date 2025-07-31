@@ -1,4 +1,6 @@
 use std::io::Read;
+use serde::{Serialize, Deserialize};
+use serde_bytes::ByteArray;
 use mapper::*;
 
 pub mod mapper;
@@ -6,13 +8,13 @@ pub mod mapper;
 const NES_HEADER_SIZE: usize = 16;
 const TRAINER_SIZE: usize = 0x0200;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum NESFileVersion {
     Version1,
     Version2,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NESFileHeader {
     pub version: NESFileVersion,
     pub mapper_number: usize,
@@ -27,11 +29,12 @@ pub struct NESFileHeader {
     pub chr_ram_size: usize,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Cartridge {
     name: String,
     header: NESFileHeader,
     mapper: Box<dyn Mapper>,
-    trainer: Option<Box<[u8; TRAINER_SIZE]>>,
+    trainer: Option<Box<ByteArray<TRAINER_SIZE>>>,
 }
 
 impl Cartridge {
@@ -75,7 +78,7 @@ impl Cartridge {
 
         let trainer = header.has_trainer
             .then(|| {
-                let mut trainer = Box::new([0; TRAINER_SIZE]);
+                let mut trainer = Box::new(ByteArray::new([0; TRAINER_SIZE]));
                 reader.read_exact(trainer.as_mut_slice()).map_err(|err| err.to_string())?;
                 Ok(trainer)
             })
@@ -84,13 +87,13 @@ impl Cartridge {
 
         let mut prg_rom = Vec::with_capacity(header.prg_rom_chunks);
         for chunk in 0 .. header.prg_rom_chunks {
-            prg_rom.push(Box::new([0; PRG_CHUNK_SIZE]));
+            prg_rom.push(PrgChunk::new([0; PRG_CHUNK_SIZE].into()));
             reader.read_exact(prg_rom[chunk].as_mut_slice()).map_err(|err| err.to_string())?;
         }
 
         let mut chr_rom = Vec::with_capacity(header.chr_rom_chunks);
         for chunk in 0 .. header.chr_rom_chunks {
-            chr_rom.push(Box::new([0; CHR_CHUNK_SIZE]));
+            chr_rom.push(ChrChunk::new([0; CHR_CHUNK_SIZE].into()));
             reader.read_exact(chr_rom[chunk].as_mut_slice()).map_err(|err| err.to_string())?;
         }
 

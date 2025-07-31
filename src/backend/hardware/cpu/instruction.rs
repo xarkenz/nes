@@ -1,3 +1,5 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::Visitor;
 use crate::hardware::*;
 
 #[derive(Copy, Clone, Debug)]
@@ -165,9 +167,57 @@ impl PartialEq for Instruction {
     }
 }
 
+impl Serialize for Instruction {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u16(match self.addressing_mode {
+            Meta => 0x100 | self.opcode as u16,
+            _ => self.opcode as u16
+        })
+    }
+}
+
+struct InstructionVisitor;
+
+impl<'de> Visitor<'de> for InstructionVisitor {
+    type Value = &'static Instruction;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("An 8-bit instruction opcode or a 16-bit meta opcode")
+    }
+
+    fn visit_u8<E: serde::de::Error>(self, value: u8) -> Result<Self::Value, E> {
+        Ok(Instruction::decode(value))
+    }
+
+    fn visit_u16<E: serde::de::Error>(self, value: u16) -> Result<Self::Value, E> {
+        if let Ok(opcode) = u8::try_from(value) {
+            Ok(Instruction::decode(opcode))
+        }
+        else {
+            let opcode = (value & 0xFF) as u8;
+            META_INSTRUCTIONS
+                .iter()
+                .copied()
+                .find(|meta| meta.opcode() == opcode)
+                .ok_or_else(|| E::custom(format!("invalid opcode: 0x{opcode:0X}")))
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for &'static Instruction {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_u16(InstructionVisitor)
+    }
+}
+
 // Meta-instructions
 const IRQ_INSTRUCTION: Instruction = Instruction::new(0x00, IRQ, Meta, 7);
-const NMI_INSTRUCTION: Instruction = Instruction::new(0x00, NMI, Meta, 7);
+const NMI_INSTRUCTION: Instruction = Instruction::new(0x01, NMI, Meta, 7);
+
+const META_INSTRUCTIONS: [&'static Instruction; 2] = [
+    &IRQ_INSTRUCTION,
+    &NMI_INSTRUCTION,
+];
 
 // Cycle counts are adapted from https://github.com/jslepicka/nemulator/blob/5dccc9ca8cdd8a8593303ecce2b433ae14f437ca/nes/cpu.cpp#L12
 const INSTRUCTIONS: [Instruction; 0x100] = [
