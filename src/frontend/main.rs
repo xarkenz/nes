@@ -404,6 +404,27 @@ pub fn main() {
             machine.write_word(address, value);
             println!("Pair at address ${address:04X}: ${old_value:04X} -> ${value:04X}");
         }
+        else if command.eq_ignore_ascii_case("GameGenie") {
+            if argument.is_empty() {
+                machine.game_genie = None;
+                println!("Disabled Game Genie.");
+            }
+            else {
+                let Some(game_genie) = game_genie::GameGenie::parse_code(argument) else {
+                    eprintln!("Error: Invalid Game Genie code.");
+                    continue;
+                };
+                let address = game_genie.address;
+                let value = game_genie.value;
+                if let Some(compare) = game_genie.compare {
+                    println!("Enabled Game Genie. (address = ${address:04X}, data = ${value:02X}, compare = ${compare:02X})");
+                }
+                else {
+                    println!("Enabled Game Genie. (address = ${address:04X}, data = ${value:02X})");
+                }
+                machine.game_genie = Some(game_genie);
+            }
+        }
         else if command.eq_ignore_ascii_case("Dis") {
             let address = match parse_int(argument) {
                 Ok(address) => address,

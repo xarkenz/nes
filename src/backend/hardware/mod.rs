@@ -2,12 +2,13 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteArray;
-use cpu::instruction::*;
 use cpu::*;
+use cpu::instruction::*;
 use ppu::*;
 use apu::*;
 use cartridge::*;
 use joypad::*;
+use game_genie::GameGenie;
 use crate::state::PullState;
 
 pub mod cpu;
@@ -16,6 +17,7 @@ pub mod apu;
 pub mod cartridge;
 pub mod joypad;
 pub mod timing;
+pub mod game_genie;
 
 pub const NTSC_FRAMES_PER_SECOND: usize = 60;
 pub const OPEN_BUS: u8 = 0x00;
@@ -33,6 +35,7 @@ pub struct Machine {
     pub cartridge: Option<Cartridge>,
     pub joypads: Joypads,
     pub internal_ram: Box<ByteArray<INTERNAL_RAM_SIZE>>,
+    pub game_genie: Option<GameGenie>,
     #[serde(skip)]
     pub debug_printing: bool,
     #[serde(skip)]
@@ -48,6 +51,7 @@ impl Machine {
             cartridge: None,
             joypads: Joypads::new(),
             internal_ram: Box::new([0; INTERNAL_RAM_SIZE].into()),
+            game_genie: None,
             debug_printing: false,
             debug_disassembly: None,
         }
@@ -56,7 +60,7 @@ impl Machine {
     pub fn start_debug_disassembly(&mut self) {
         self.debug_disassembly = Some(BTreeMap::new());
     }
-    
+
     pub fn cancel_debug_disassembly(&mut self) {
         self.debug_disassembly = None;
     }
@@ -115,9 +119,7 @@ impl Machine {
                 self.joypads.read_player_2()
             }
             _ => {
-                self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
-                    cartridge.read_cpu_byte(address)
-                })
+                self.read_rom_byte(address)
             }
         }
     }
@@ -128,10 +130,23 @@ impl Machine {
                 self.internal_ram[(address & 0x07FF) as usize]
             }
             _ => {
-                self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
-                    cartridge.read_cpu_byte(address)
-                })
+                self.read_rom_byte(address)
             }
+        }
+    }
+
+    fn read_rom_byte(&self, address: u16) -> u8 {
+        let read_from_cartridge = || {
+            self.cartridge.as_ref().map_or(OPEN_BUS, |cartridge| {
+                cartridge.read_cpu_byte(address)
+            })
+        };
+
+        if let Some(game_genie) = &self.game_genie {
+            game_genie.read_byte(address, read_from_cartridge)
+        }
+        else {
+            read_from_cartridge()
         }
     }
 
@@ -303,7 +318,7 @@ impl Machine {
             self.cpu.pending_instruction = Some(Instruction::decode(opcode));
         }
     }
-    
+
     fn check_irq(&mut self) -> bool {
         self.apu.irq_asserted() || self.cartridge.as_mut().is_some_and(Cartridge::check_irq)
     }
@@ -333,7 +348,7 @@ impl Machine {
             self.cpu.oam_dma_address = self.cpu.oam_dma_address.wrapping_add(1);
         }
     }
-    
+
     fn tick_dmc_dma_cycle(&mut self) {
         let Some((dma_address, is_reload)) = self.apu.dmc_dma_request() else {
             // DMC DMA is not currently being requested
